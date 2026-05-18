@@ -67,7 +67,11 @@ export async function uninstallWorkflowGlobalsCommand(
   );
   if (confirm !== 'Remove') { return; }
 
-  const reports = uninstallWorkflowGlobalsByIds(ids, (m) => output.appendLine(m));
+  const reports = uninstallWorkflowGlobalsByIds(
+    ids,
+    (m) => output.appendLine(m),
+    extensionPath,
+  );
   const totalRemoved = reports.reduce((acc, r) => acc + r.removed.length, 0);
   const totalSkipped = reports.reduce((acc, r) => acc + r.skipped.length, 0);
   const skippedNote = totalSkipped > 0

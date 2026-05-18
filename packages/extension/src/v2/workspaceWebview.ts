@@ -35,21 +35,13 @@ import {
 import { SKILL_TEMPLATES } from './skillTemplates';
 import {
   loadBuiltinPreset,
-  getAllBuiltinPipelineSummaries,
   getBuiltinPipelineSummary,
-  getSdlcArtifactTemplates,
   getBuiltinArtifactTemplates,
   getBuiltinWorkflowByPipelineId,
-  SDLC_PIPELINE_ID,
-  PHASES,
-  sdlcClaudeCommand,
+  builtinClaudeCommand,
   BUILTIN_WORKFLOWS,
-  workflowSlug,
 } from './builtinPresets';
-import {
-  isWorkflowGloballyInstalled,
-  uninstallWorkflowGlobalsByIds,
-} from './globalDefaultsInstaller';
+import { uninstallWorkflowGlobalsByIds } from './globalDefaultsInstaller';
 import { PresetStore } from './presetStore';
 import type {
   PipelineStepConfig,
@@ -60,7 +52,7 @@ import type {
   AutoReviewVerdict,
   StepHistoryEntry,
 } from '@aidlc/core';
-import { promptStepConfig } from './wizards';
+import { promptStepConfig, type PipelineStepConfigDraft } from './wizards';
 import {
   listEpics,
   enrichEpicsWithUsage,
@@ -87,6 +79,7 @@ interface AgentSummary {
   filePath: string;
   description?: string;
   skill?: string;
+  skills?: string[];
   model?: string;
   integrations?: string[];
   /** Human label of the built-in preset that contributed this entry (e.g. "SDLC Pipeline"). Absent for user-created entries. */
@@ -104,9 +97,11 @@ interface SkillSummary {
 interface PipelineStepSummary {
   agent: string;
   name?: string;
+  skills?: string[];
   enabled: boolean;
   produces: string[];
   requires: string[];
+  depends_on?: string[];
   human_review: boolean;
   auto_review: boolean;
   auto_review_runner?: string;
@@ -129,8 +124,31 @@ interface AgentMeta {
   capabilities?: string[];
 }
 
+/**
+ * Pending workspace.yaml addition computed from a file-based agent
+ * (project / global scope) before the pipeline that references it is
+ * written. `ensureWorkspaceAgentsForSteps` plans these, `applySyncedAgents`
+ * commits them inside the same `mutateYaml` block as the pipeline push.
+ */
+interface SyncedAgentPlan {
+  agent: {
+    id: string;
+    name: string;
+    skills: string[];
+    model?: string;
+    description?: string;
+    capabilities?: string[];
+  };
+  skill: { id: string; path: string };
+}
+
 interface EpicStepDetailFull {
   agent: string;
+  /** Optional phase id (= slash command name) for built-in pipelines. */
+  stepName?: string;
+  /** Step's artifact filename (basename of `produces[0]`). Empty when the
+   *  step's output is a non-file artifact (branch / tag). */
+  artifact?: string;
   status: 'pending' | 'in_progress' | 'done' | 'failed';
   runStatus: StepStatus | null;
   isCurrentRunStep: boolean;
@@ -138,6 +156,7 @@ interface EpicStepDetailFull {
   autoReviewVerdict?: AutoReviewVerdict;
   stepHasAutoReview: boolean;
   stepHasHumanReview: boolean;
+  dependsOn?: string[];
   startedAt?: string;
   finishedAt?: string;
   history?: StepHistoryEntry[];
@@ -221,7 +240,7 @@ const SKILL_TEMPLATE_REFS: SkillTemplateRef[] = SKILL_TEMPLATES.map((t) => ({
 
 // ── State builders ────────────────────────────────────────────────────────
 
-function buildState(initialView: WorkspaceView, extensionPath: string): WorkspaceState {
+function buildState(initialView: WorkspaceView): WorkspaceState {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) {
     return {
@@ -271,14 +290,11 @@ function buildState(initialView: WorkspaceView, extensionPath: string): Workspac
 
   const epics = listEpics(root, doc).map((e) => toEpicSummaryUi(e));
 
-  // Only surface built-in workflows whose agents + skills are actually
-  // installed under `~/.claude/`. Auto-install was removed — the Domain
-  // dropdown would otherwise list pipelines whose persona/skill files don't
-  // exist, breaking the run.
-  const builtinSummaries = getAllBuiltinPipelineSummaries().filter((p) => {
-    const workflow = BUILTIN_WORKFLOWS.find((w) => w.pipelineId === p.id);
-    return workflow ? isWorkflowGloballyInstalled(extensionPath, workflow.id) : false;
-  });
+  // No auto-injection: the Domain dropdown only shows pipelines that are
+  // actually declared in workspace.yaml. Users add built-ins via the
+  // sidebar's Workflows section ("Load Template"). Without this, deleting
+  // a built-in pipeline would silently re-appear on the next refresh
+  // because BUILTIN_WORKFLOWS would re-inject it.
 
   if (!doc) {
     const agents = mergeAgents(null, root, discovered.agents);
@@ -289,12 +305,12 @@ function buildState(initialView: WorkspaceView, extensionPath: string): Workspac
       workspaceName: folder.name,
       configExists: false,
       agents, skills,
-      pipelines: builtinSummaries,
+      pipelines: [],
       epics,
       agentMeta, slashCommandsByAgent,
       agentsCount: agents.length,
       skillsCount: skills.length,
-      pipelinesCount: builtinSummaries.length,
+      pipelinesCount: 0,
       epicsCount: epics.length,
       runIds: listRunIds(root),
       skillTemplates: SKILL_TEMPLATE_REFS,
@@ -309,15 +325,18 @@ function buildState(initialView: WorkspaceView, extensionPath: string): Workspac
   const pipelines: PipelineSummary[] = doc.pipelines.map((p) => ({
     id: String(p.id),
     on_failure: p.on_failure === 'continue' ? 'continue' : 'stop',
+    builtin: BUILTIN_WORKFLOWS.some((w) => w.pipelineId === String(p.id)),
     steps: Array.isArray(p.steps)
       ? (p.steps as PipelineStepConfig[]).map((raw) => {
           const norm = normalizeStep(raw);
           return {
             agent: norm.agent,
             name: norm.name,
+            skills: norm.skills,
             enabled: norm.enabled,
             produces: norm.produces,
             requires: norm.requires,
+            depends_on: norm.depends_on,
             human_review: norm.human_review,
             auto_review: norm.auto_review,
             auto_review_runner: norm.auto_review_runner,
@@ -325,13 +344,6 @@ function buildState(initialView: WorkspaceView, extensionPath: string): Workspac
         })
       : [],
   }));
-  // Inject any built-in pipeline that hasn't been explicitly defined in
-  // workspace.yaml. SDLC lands at the very top; other built-ins follow in
-  // BUILTIN_WORKFLOWS order. User-defined pipelines from workspace.yaml keep
-  // their original order after the built-ins.
-  const existingIds = new Set(pipelines.map((p) => p.id));
-  const missingBuiltins = builtinSummaries.filter((b) => !existingIds.has(b.id));
-  pipelines.unshift(...missingBuiltins);
 
   const epicRoot = readEpicRoot(doc);
   const epicIds = listEpicIdsFromDir(root, epicRoot);
@@ -456,6 +468,8 @@ function toEpicSummaryUi(e: CoreEpicSummary): EpicSummaryUi {
     statePath: e.statePath,
     stepDetails: e.stepDetails.map((s) => ({
       agent: s.agent,
+      stepName: s.name,
+      artifact: s.artifact,
       status: s.status,
       runStatus: s.runStatus,
       isCurrentRunStep: s.isCurrentRunStep,
@@ -463,6 +477,7 @@ function toEpicSummaryUi(e: CoreEpicSummary): EpicSummaryUi {
       autoReviewVerdict: s.autoReviewVerdict,
       stepHasAutoReview: s.stepHasAutoReview,
       stepHasHumanReview: s.stepHasHumanReview,
+      dependsOn: s.dependsOn,
       startedAt: s.startedAt ?? undefined,
       finishedAt: s.finishedAt ?? undefined,
       history: s.history,
@@ -533,8 +548,34 @@ function detectBuiltinSource(filePath: string): string | undefined {
 
 function mergeAgents(doc: YamlDocument | null, root: string, discovered: DiscoveredAsset[]): AgentSummary[] {
   const out: AgentSummary[] = [];
+
+  // Workspace.yaml owns the persona ↔ skills binding for AIDLC personas, but
+  // the same persona shows up in the Agents tab (and the AddPipeline picker)
+  // as a project/global `.md` file. Build a lookup so file-based entries
+  // inherit their `skills:` array — the picker hides the AIDLC scope, so
+  // without this overlay the per-step skill picker would be empty.
+  const yamlSkillsById = new Map<string, string[]>();
+  if (doc) {
+    for (const a of doc.agents) {
+      const skills = extractSkillIds(a);
+      if (skills.length > 0) { yamlSkillsById.set(String(a.id), skills); }
+    }
+  }
+
   for (const a of discovered.filter((x) => x.scope === 'project')) {
-    out.push({ id: a.id, scope: 'project', filePath: a.filePath, builtinFrom: detectBuiltinSource(a.filePath) });
+    const fm = parseAgentFrontmatter(a.filePath);
+    const yamlSkills = yamlSkillsById.get(a.id);
+    out.push({
+      id: a.id,
+      scope: 'project',
+      filePath: a.filePath,
+      description: fm.description,
+      model: fm.model,
+      integrations: fm.tools,
+      skill: yamlSkills?.[0],
+      skills: yamlSkills,
+      builtinFrom: detectBuiltinSource(a.filePath),
+    });
   }
   if (doc) {
     // Pre-index workspace.yaml skill declarations by id so we can resolve
@@ -563,6 +604,7 @@ function mergeAgents(doc: YamlDocument | null, root: string, discovered: Discove
         filePath: '',
         description: typeof a.description === 'string' ? a.description : (typeof a.name === 'string' ? a.name : undefined),
         skill: skills[0],
+        skills,
         model: typeof a.model === 'string' ? a.model : undefined,
         integrations: Array.isArray(a.capabilities)
           ? (a.capabilities as unknown[]).map(String)
@@ -572,9 +614,162 @@ function mergeAgents(doc: YamlDocument | null, root: string, discovered: Discove
     }
   }
   for (const a of discovered.filter((x) => x.scope === 'global')) {
-    out.push({ id: a.id, scope: 'global', filePath: a.filePath, builtinFrom: detectBuiltinSource(a.filePath) });
+    const fm = parseAgentFrontmatter(a.filePath);
+    const yamlSkills = yamlSkillsById.get(a.id);
+    out.push({
+      id: a.id,
+      scope: 'global',
+      filePath: a.filePath,
+      description: fm.description,
+      model: fm.model,
+      integrations: fm.tools,
+      skill: yamlSkills?.[0],
+      skills: yamlSkills,
+      builtinFrom: detectBuiltinSource(a.filePath),
+    });
   }
   return out;
+}
+
+/**
+ * Pull `description`, `model`, and `tools` out of a Claude-native agent
+ * `.md` file's YAML frontmatter. Hand-rolled parser (no yaml dep needed
+ * for the three fields we care about) — reads only the first 4 KB and
+ * stops at the closing `---`.
+ *
+ * `tools` accepts either an inline array (`[files, jira]`) or a bullet
+ * list under the key. Unknown fields are ignored.
+ */
+function parseAgentFrontmatter(filePath: string): {
+  description?: string;
+  model?: string;
+  tools?: string[];
+} {
+  if (!filePath || !fs.existsSync(filePath)) { return {}; }
+  let raw: string;
+  try { raw = fs.readFileSync(filePath, 'utf8').slice(0, 4096); }
+  catch { return {}; }
+  // First line that isn't whitespace/marker should be `---`.
+  const m = raw.match(/^(?:<!--[^\n]*-->\s*\n)?---\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) { return {}; }
+  const block = m[1];
+
+  const out: { description?: string; model?: string; tools?: string[] } = {};
+  const lines = block.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fmKey = line.match(/^(\w+)\s*:\s*(.*)$/);
+    if (!fmKey) { continue; }
+    const key = fmKey[1].toLowerCase();
+    const value = fmKey[2].trim();
+    if (key === 'description') {
+      out.description = stripFrontmatterQuotes(value);
+    } else if (key === 'model') {
+      out.model = stripFrontmatterQuotes(value);
+    } else if (key === 'tools') {
+      if (value.startsWith('[') && value.endsWith(']')) {
+        out.tools = value.slice(1, -1).split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+      } else if (!value) {
+        // YAML list form: collect indented `- item` lines.
+        const items: string[] = [];
+        for (let j = i + 1; j < lines.length; j++) {
+          const m2 = lines[j].match(/^\s*-\s+(.+)$/);
+          if (!m2) { break; }
+          items.push(m2[1].trim().replace(/^['"]|['"]$/g, ''));
+        }
+        if (items.length > 0) { out.tools = items; }
+      }
+    }
+  }
+  return out;
+}
+
+function stripFrontmatterQuotes(s: string): string {
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
+/**
+ * Rewrite a Claude-native agent `.md` file's YAML frontmatter. Each key in
+ * `updates` either overwrites the existing field, removes it (when value is
+ * an explicit empty array for `tools`), or leaves it alone (`undefined`).
+ *
+ * The body — everything after the closing `---` — is preserved byte-for-byte.
+ * If the file has no frontmatter, one is prepended.
+ *
+ * Used by `editAgentInline` so the modal save round-trips through the
+ * same fields `parseAgentFrontmatter` reads back.
+ */
+function rewriteAgentFrontmatter(
+  raw: string,
+  updates: {
+    name?: string;
+    description?: string;
+    model?: string;
+    tools?: string[];
+  },
+): string {
+  const m = raw.match(/^(?:<!--[^\n]*-->\s*\n)?---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  const existing: Record<string, string> = {};
+  const existingTools: { value: string[] | null } = { value: null };
+  let body = raw;
+  if (m) {
+    body = raw.slice(m[0].length);
+    const lines = m[1].split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const kv = line.match(/^(\w+)\s*:\s*(.*)$/);
+      if (!kv) { continue; }
+      const key = kv[1];
+      const value = kv[2].trim();
+      if (key === 'tools') {
+        if (value.startsWith('[') && value.endsWith(']')) {
+          existingTools.value = value.slice(1, -1).split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+        } else if (!value) {
+          const items: string[] = [];
+          let j = i + 1;
+          while (j < lines.length) {
+            const item = lines[j].match(/^\s*-\s+(.+)$/);
+            if (!item) { break; }
+            items.push(item[1].trim().replace(/^['"]|['"]$/g, ''));
+            j++;
+          }
+          if (items.length > 0) { existingTools.value = items; }
+          i = j - 1;
+        }
+      } else {
+        existing[key] = value;
+      }
+    }
+  }
+
+  const merged: Record<string, string> = { ...existing };
+  if (updates.name !== undefined) { merged.name = updates.name; }
+  if (updates.description !== undefined) { merged.description = updates.description; }
+  if (updates.model !== undefined) { merged.model = updates.model; }
+  const finalTools = updates.tools ?? existingTools.value ?? null;
+
+  // Emit in a stable order: name, description, model, tools, then any
+  // other keys we preserved (e.g. user-added frontmatter).
+  const orderedKeys = ['name', 'description', 'model'];
+  const lines: string[] = ['---'];
+  for (const k of orderedKeys) {
+    if (merged[k] !== undefined && merged[k] !== '') {
+      lines.push(`${k}: ${merged[k]}`);
+    }
+  }
+  for (const [k, v] of Object.entries(merged)) {
+    if (orderedKeys.includes(k)) { continue; }
+    if (v) { lines.push(`${k}: ${v}`); }
+  }
+  if (finalTools && finalTools.length > 0) {
+    lines.push(`tools: [${finalTools.join(', ')}]`);
+  }
+  lines.push('---', '');
+  const bodyTrimmed = body.replace(/^\r?\n+/, '');
+  return `${lines.join('\n')}\n${bodyTrimmed}`;
 }
 
 function expandHomePath(p: string): string {
@@ -728,7 +923,7 @@ export class WorkspaceWebview {
   private async refreshAsync(): Promise<void> {
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (root) { this.ensureWorkflowTemplates(root); }
-    const state = buildState(this.currentView, this.extensionUri.fsPath);
+    const state = buildState(this.currentView);
     await mergeEpicTokenUsageInto(state);
     void this.panel.webview.postMessage({ type: 'state', state });
   }
@@ -769,7 +964,11 @@ export class WorkspaceWebview {
       }
 
       // Delegations
-      case 'init':         await vscode.commands.executeCommand('aidlc.initWorkspace'); return;
+      case 'init': {
+        const workflowId = typeof msg.workflowId === 'string' ? msg.workflowId : undefined;
+        await vscode.commands.executeCommand('aidlc.initWorkspace', workflowId);
+        return;
+      }
       case 'applyPreset':  await vscode.commands.executeCommand('aidlc.applyPreset');   return;
       case 'initSdlcPreset':
         await vscode.commands.executeCommand('aidlc.applyPreset', 'sdlc-pipeline', true);
@@ -883,7 +1082,10 @@ export class WorkspaceWebview {
       case 'openRunState': {
         const runId = String(msg.runId ?? '');
         const cmd = `aidlc.${msg.type}`;
-        await vscode.commands.executeCommand(cmd, runId || undefined);
+        const stepIdx = typeof msg.stepIdx === 'number' && Number.isInteger(msg.stepIdx)
+          ? msg.stepIdx
+          : undefined;
+        await vscode.commands.executeCommand(cmd, runId || undefined, stepIdx);
         return;
       }
       case 'deleteRun': {
@@ -901,8 +1103,11 @@ export class WorkspaceWebview {
         const runId = String(msg.runId ?? '');
         const reason = String(msg.reason ?? '');
         const targetIdx = Number(msg.targetIdx);
+        const stepIdx = typeof msg.stepIdx === 'number' && Number.isInteger(msg.stepIdx)
+          ? msg.stepIdx
+          : undefined;
         if (!runId || !Number.isInteger(targetIdx)) { return; }
-        await rejectStepInlineCommand(runId, reason, targetIdx);
+        await rejectStepInlineCommand(runId, reason, targetIdx, stepIdx);
         return;
       }
       case 'startRunInline': {
@@ -937,6 +1142,12 @@ export class WorkspaceWebview {
         await this.addAgentInline(draft as Record<string, unknown>);
         return;
       }
+      case 'editAgentInline': {
+        const draft = msg.draft;
+        if (!draft || typeof draft !== 'object') { return; }
+        await this.editAgentInline(draft as Record<string, unknown>);
+        return;
+      }
       case 'startEpicInline': {
         const draft = msg.draft;
         if (!draft || typeof draft !== 'object') { return; }
@@ -946,8 +1157,11 @@ export class WorkspaceWebview {
       case 'rerunStepInline': {
         const runId = String(msg.runId ?? '');
         const feedback = String(msg.feedback ?? '');
+        const stepIdx = typeof msg.stepIdx === 'number' && Number.isInteger(msg.stepIdx)
+          ? msg.stepIdx
+          : undefined;
         if (!runId) { return; }
-        await rerunStepInlineCommand(runId, feedback);
+        await rerunStepInlineCommand(runId, feedback, stepIdx);
         return;
       }
       case 'runStepWithFeedback': {
@@ -1004,6 +1218,15 @@ export class WorkspaceWebview {
         const pipelineId = String(msg.pipelineId ?? '');
         const agentId = typeof msg.agentId === 'string' ? msg.agentId : undefined;
         await this.addStepToPipeline(pipelineId, agentId);
+        return;
+      }
+      case 'addParallelStep': {
+        const pipelineId = String(msg.pipelineId ?? '');
+        const agentId = typeof msg.agentId === 'string' ? msg.agentId : undefined;
+        const parallelToAgent =
+          typeof msg.parallelToAgent === 'string' ? msg.parallelToAgent : '';
+        if (!pipelineId || !agentId || !parallelToAgent) { return; }
+        await this.addParallelStep(pipelineId, parallelToAgent, agentId);
         return;
       }
       case 'deleteStep':
@@ -1125,7 +1348,61 @@ export class WorkspaceWebview {
     this.mutateYaml((doc) => {
       const p = doc.pipelines.find((x) => x.id === pipelineId);
       if (!p || !Array.isArray(p.steps)) { return false; }
-      (p.steps as PipelineStepConfig[]).splice(idx, 1);
+      const steps = p.steps as PipelineStepConfig[];
+      if (idx >= steps.length) { return false; }
+
+      // Capture the deleted step's agent + its own deps before splicing so
+      // we can rewire any child step's `depends_on`. The goal: preserve the
+      // visual DAG layout — children of the removed step should stay at the
+      // same column they were in before deletion. Achieve that by picking a
+      // "sibling" of the deleted step (a step with the *same* dependency
+      // set), so the child ends up at the same level. Fall back to the
+      // deleted step's own deps when no sibling exists.
+      const removed = steps[idx];
+      const stepAgent = (s: PipelineStepConfig): string =>
+        typeof s === 'string'
+          ? s
+          : typeof (s as { agent?: unknown }).agent === 'string'
+            ? (s as { agent: string }).agent
+            : '';
+      const stepDeps = (s: PipelineStepConfig): string[] => {
+        if (typeof s === 'string') { return []; }
+        const d = (s as { depends_on?: unknown }).depends_on;
+        return Array.isArray(d) ? d.map(String) : [];
+      };
+      const removedAgent = stepAgent(removed);
+      const removedDeps = stepDeps(removed);
+
+      steps.splice(idx, 1);
+      if (!removedAgent) { return; }
+
+      const setsEqual = (a: string[], b: string[]): boolean => {
+        if (a.length !== b.length) { return false; }
+        const sa = new Set(a);
+        for (const x of b) { if (!sa.has(x)) { return false; } }
+        return true;
+      };
+      const siblings = steps
+        .filter((s) => setsEqual(stepDeps(s), removedDeps))
+        .map(stepAgent)
+        .filter((a) => a && a !== removedAgent);
+      const replacement = siblings.length > 0 ? siblings.slice(0, 1) : removedDeps;
+
+      for (let i = 0; i < steps.length; i++) {
+        const s = steps[i];
+        if (typeof s === 'string') { continue; }
+        const obj = s as { depends_on?: unknown };
+        const deps = Array.isArray(obj.depends_on) ? obj.depends_on.map(String) : [];
+        if (!deps.includes(removedAgent)) { continue; }
+        const rewired = Array.from(new Set(
+          deps.flatMap((d) => (d === removedAgent ? replacement : [d])),
+        ));
+        if (rewired.length > 0) {
+          obj.depends_on = rewired;
+        } else {
+          delete obj.depends_on;
+        }
+      }
     });
   }
 
@@ -1148,7 +1425,11 @@ export class WorkspaceWebview {
     }
     const raw = pipeline.steps[idx] as PipelineStepConfig;
     const norm = normalizeStep(raw);
-    let draft;
+    let draft: PipelineStepConfigDraft;
+    // `inlineSkills` is `undefined` when the QuickPick path runs (it doesn't
+    // touch skills), and the existing step.skills get preserved via prevObj.
+    // An empty array from the inline path means "clear all skills".
+    let inlineSkills: string[] | undefined;
     if (inlineConfig) {
       const requires = Array.isArray(inlineConfig.requires)
         ? (inlineConfig.requires as unknown[]).map(String)
@@ -1156,6 +1437,9 @@ export class WorkspaceWebview {
       const produces = Array.isArray(inlineConfig.produces)
         ? (inlineConfig.produces as unknown[]).map(String)
         : [];
+      if (Array.isArray(inlineConfig.skills)) {
+        inlineSkills = (inlineConfig.skills as unknown[]).map(String).filter((s) => s.length > 0);
+      }
       const runnerRaw = inlineConfig.auto_review_runner;
       draft = {
         agent: norm.agent,
@@ -1184,7 +1468,15 @@ export class WorkspaceWebview {
     this.mutateYaml((d) => {
       const p = d.pipelines.find((x) => x.id === pipelineId);
       if (!p || !Array.isArray(p.steps) || idx >= p.steps.length) { return false; }
+      // Preserve `depends_on` (and any other untouched fields like
+      // `name`) on the existing step — the config modal manages gate
+      // flags + artifact paths only. Rebuilding the step object from
+      // scratch wipes DAG edges and collapses the visual layout.
+      const prev = p.steps[idx];
+      const prevObj: Record<string, unknown> =
+        typeof prev === 'object' && prev !== null ? { ...(prev as Record<string, unknown>) } : {};
       const obj: Record<string, unknown> = {
+        ...prevObj,
         agent: draft.agent,
         enabled: draft.enabled,
         requires: draft.requires,
@@ -1194,8 +1486,21 @@ export class WorkspaceWebview {
       };
       if (draft.auto_review && draft.auto_review_runner) {
         obj.auto_review_runner = draft.auto_review_runner;
+      } else {
+        delete obj.auto_review_runner;
       }
-      p.steps[idx] = obj;
+      // `inlineSkills` is set only on the inline edit path — preserve
+      // `step.skills` from `prevObj` when QuickPick (no skills field) was used.
+      if (inlineSkills !== undefined) {
+        if (inlineSkills.length > 0) {
+          obj.skills = inlineSkills;
+          delete obj.skill;
+        } else {
+          delete obj.skills;
+          delete obj.skill;
+        }
+      }
+      p.steps[idx] = obj as unknown as PipelineStepConfig;
     });
   }
 
@@ -1287,7 +1592,7 @@ export class WorkspaceWebview {
     const name = String(draft.name ?? '').trim();
     const skillsRaw = Array.isArray(draft.skills) ? (draft.skills as unknown[]) : [];
     const skills = skillsRaw.map(String).filter((s) => s);
-    if (!id || !name || skills.length === 0) { return; }
+    if (!id || !name) { return; }
     if (scope !== 'project' && scope !== 'aidlc' && scope !== 'global') { return; }
 
     const yamlSkillIds = new Set(doc.skills.map((s) => String(s.id)));
@@ -1300,18 +1605,22 @@ export class WorkspaceWebview {
       }
     }
 
+    // Common fields surfaced by the modal across every scope.
+    const model = String(draft.model ?? '').trim();
+    const description = String(draft.description ?? '').trim();
+    const capsRaw = Array.isArray(draft.capabilities) ? (draft.capabilities as unknown[]) : [];
+    const capabilities = capsRaw.map(String).filter((c) => c);
+
     if (scope === 'aidlc') {
-      const model = String(draft.model ?? '').trim();
       if (!model) { return; }
       const envObj = draft.env && typeof draft.env === 'object'
         ? (draft.env as Record<string, unknown>)
         : {};
       const env: Record<string, string> = {};
       for (const [k, v] of Object.entries(envObj)) { env[k] = String(v); }
-      const capsRaw = Array.isArray(draft.capabilities) ? (draft.capabilities as unknown[]) : [];
-      const capabilities = capsRaw.map(String).filter((c) => c);
 
       const agent: Record<string, unknown> = { id, name, skills, model };
+      if (description) { agent.description = description; }
       if (Object.keys(env).length > 0) { agent.env = env; }
       if (capabilities.length > 0) { agent.capabilities = capabilities; }
 
@@ -1325,8 +1634,11 @@ export class WorkspaceWebview {
       return;
     }
 
-    // project / global: write Claude-native .md
-    const description = String(draft.description ?? '').trim() || `${name} agent.`;
+    // project / global: write Claude-native .md. Frontmatter now carries
+    // the same fields surfaced in the modal — model + tools (capabilities)
+    // — so the user's choices flow through into Claude Code's native
+    // agent format instead of being silently dropped.
+    const effectiveDescription = description || `${name} agent.`;
     const agentPath = targetPath(root, scope, 'agent', id);
     if (fs.existsSync(agentPath)) {
       void vscode.window.showWarningMessage(
@@ -1354,13 +1666,20 @@ export class WorkspaceWebview {
       sections.push('');
     }
 
-    const content = `---
-name: ${name}
-description: ${description}
----
-
-${sections.join('\n').trimEnd()}
-`;
+    // Build the YAML frontmatter. `model` and `tools` are Claude Code
+    // native frontmatter fields; surfacing them here means the agent file
+    // honors the user's modal choices instead of silently dropping them.
+    const frontmatterLines = [
+      '---',
+      `name: ${name}`,
+      `description: ${effectiveDescription}`,
+    ];
+    if (model) { frontmatterLines.push(`model: ${model}`); }
+    if (capabilities.length > 0) {
+      frontmatterLines.push(`tools: [${capabilities.join(', ')}]`);
+    }
+    frontmatterLines.push('---', '');
+    const content = `${frontmatterLines.join('\n')}\n${sections.join('\n').trimEnd()}\n`;
 
     fs.mkdirSync(path.dirname(agentPath), { recursive: true });
     fs.writeFileSync(agentPath, content, 'utf8');
@@ -1371,6 +1690,109 @@ ${sections.join('\n').trimEnd()}
     void vscode.window.showInformationMessage(
       `Agent "${id}" added (${scope} · skills: ${skills.join(', ')}).`,
     );
+  }
+
+  /**
+   * Apply the EditAgentModal draft. Supports both file-based scopes
+   * (project/global — rewrite YAML frontmatter, preserve body) and the
+   * AIDLC scope (mutate workspace.yaml entry). The id is locked by the
+   * modal so this never has to handle renames — use `renameAgent` for that.
+   */
+  private async editAgentInline(draft: Record<string, unknown>): Promise<void> {
+    const root = this.getRootOrWarn();
+    if (!root) { return; }
+
+    const id = String(draft.id ?? '').trim();
+    const scope = draft.scope as AssetScope;
+    if (!id || (scope !== 'project' && scope !== 'aidlc' && scope !== 'global')) { return; }
+
+    const name = String(draft.name ?? '').trim();
+    const description = String(draft.description ?? '').trim();
+    const model = String(draft.model ?? '').trim();
+    const capsRaw = Array.isArray(draft.capabilities) ? (draft.capabilities as unknown[]) : [];
+    const capabilities = capsRaw.map(String).filter((c) => c);
+    // `skills` is only present on edits that opened the modal post-v2 —
+    // older payloads omit the field, which we read as "leave skills alone".
+    const skillsProvided = Array.isArray(draft.skills);
+    const skills = skillsProvided
+      ? (draft.skills as unknown[]).map(String).filter((s) => s.length > 0)
+      : [];
+
+    if (scope === 'aidlc') {
+      this.mutateYaml((doc) => {
+        const agent = doc.agents.find((a) => String(a.id) === id);
+        if (!agent) { return false; }
+        if (name) { agent.name = name; }
+        if (description) {
+          agent.description = description;
+        } else {
+          delete agent.description;
+        }
+        if (model) { agent.model = model; }
+        if (capabilities.length > 0) {
+          agent.capabilities = capabilities;
+        } else {
+          delete agent.capabilities;
+        }
+        if (skillsProvided) {
+          if (skills.length > 0) {
+            agent.skills = skills;
+            delete (agent as Record<string, unknown>).skill;
+          } else {
+            delete (agent as Record<string, unknown>).skills;
+            delete (agent as Record<string, unknown>).skill;
+          }
+        }
+      });
+      void vscode.window.showInformationMessage(`Agent "${id}" updated.`);
+      return;
+    }
+
+    // project / global: rewrite the .md file's frontmatter, keep body intact.
+    const agentPath = targetPath(root, scope, 'agent', id);
+    if (!fs.existsSync(agentPath)) {
+      void vscode.window.showWarningMessage(
+        `Agent file not found at ${path.relative(root, agentPath) || agentPath}.`,
+      );
+      return;
+    }
+    const raw = fs.readFileSync(agentPath, 'utf8');
+    const updated = rewriteAgentFrontmatter(raw, {
+      name: name || undefined,
+      description: description || undefined,
+      model: model || undefined,
+      tools: capabilities.length > 0 ? capabilities : undefined,
+    });
+    fs.writeFileSync(agentPath, updated, 'utf8');
+
+    // Persona ↔ skill binding lives in workspace.yaml's AIDLC layer (the
+    // agent frontmatter has no `skills:` field), so write it there even
+    // for file-based agents. Idempotent — creates the entry on first edit,
+    // updates it thereafter.
+    if (skillsProvided) {
+      this.mutateYaml((doc) => {
+        const existing = doc.agents.find((a) => String(a.id) === id);
+        if (skills.length === 0) {
+          if (existing) {
+            delete (existing as Record<string, unknown>).skills;
+            delete (existing as Record<string, unknown>).skill;
+          }
+          return;
+        }
+        if (existing) {
+          (existing as Record<string, unknown>).skills = skills;
+          delete (existing as Record<string, unknown>).skill;
+        } else {
+          const entry: Record<string, unknown> = { id, skills };
+          if (name) { entry.name = name; }
+          if (description) { entry.description = description; }
+          if (model) { entry.model = model; }
+          if (capabilities.length > 0) { entry.capabilities = capabilities; }
+          doc.agents.push(entry as unknown as YamlDocument['agents'][number]);
+        }
+      });
+    }
+    void vscode.window.showInformationMessage(`Agent "${id}" updated.`);
   }
 
   /**
@@ -1448,13 +1870,12 @@ ${sections.join('\n').trimEnd()}
 
     const commandsDir = path.join(root, '.claude', 'commands');
     fs.mkdirSync(commandsDir, { recursive: true });
-    const slug = workflowSlug(builtin);
-    for (const phase of PHASES) {
-      const nsId = `${slug}-${phase.id}`;
+    for (const phase of builtin.phases) {
+      const nsId = phase.id;
       const commandFile = path.join(commandsDir, `${nsId}.md`);
       if (!fs.existsSync(commandFile)) {
         const skillBody = preset.skillContents[nsId] ?? `# ${phase.name}\n\n${phase.description}\n`;
-        fs.writeFileSync(commandFile, sdlcClaudeCommand(phase, skillBody, epicRoot), 'utf8');
+        fs.writeFileSync(commandFile, builtinClaudeCommand(phase, skillBody, epicRoot), 'utf8');
       }
     }
 
@@ -1492,31 +1913,18 @@ ${sections.join('\n').trimEnd()}
    * the user starts an epic.
    */
   private ensureWorkflowTemplates(root: string): void {
-    // SDLC built-in templates (bundled — no network / CLI needed). Always
-    // extracted even if the user hasn't applied the preset, because the SDLC
-    // pipeline is auto-injected into every project's picker.
-    const sdlcTemplatesDir = path.join(root, WORKSPACE_DIR, 'aidlc-templates', SDLC_PIPELINE_ID);
-    fs.mkdirSync(sdlcTemplatesDir, { recursive: true });
-    const sdlcTemplates = getSdlcArtifactTemplates(this.extensionUri.fsPath);
-    for (const [fileName, content] of Object.entries(sdlcTemplates)) {
-      const dest = path.join(sdlcTemplatesDir, fileName);
-      if (!fs.existsSync(dest)) { fs.writeFileSync(dest, content, 'utf8'); }
-    }
-
+    // For every built-in pipeline present in workspace.yaml, drop the
+    // bundled artifact templates into `.aidlc/aidlc-templates/<pipelineId>/`.
+    // No special-casing — every workflow extracts on first apply, idempotent
+    // on subsequent panel refreshes.
     const doc = readYaml(root);
     if (!doc) { return; }
-
-    // For any non-SDLC built-in workflow that the user has applied (i.e. its
-    // pipeline shows up in workspace.yaml), drop the bundled artifact
-    // templates into the matching `.aidlc/aidlc-templates/<pipelineId>/`.
     for (const p of doc.pipelines) {
       const pId = String(p.id);
-      if (pId === SDLC_PIPELINE_ID) { continue; }
-      const dir = path.join(root, WORKSPACE_DIR, 'aidlc-templates', pId);
-      fs.mkdirSync(dir, { recursive: true });
-
       const workflow = getBuiltinWorkflowByPipelineId(pId);
       if (!workflow) { continue; }
+      const dir = path.join(root, WORKSPACE_DIR, 'aidlc-templates', pId);
+      fs.mkdirSync(dir, { recursive: true });
       const templates = getBuiltinArtifactTemplates(this.extensionUri.fsPath, workflow);
       for (const [fileName, content] of Object.entries(templates)) {
         const dest = path.join(dir, fileName);
@@ -1682,6 +2090,108 @@ ${sections.join('\n').trimEnd()}
    * the legacy QuickPick wizard chain. Validates id, agents, and runner
    * paths server-side; surfaces issues as a warning and aborts.
    */
+  /**
+   * Resolve every step's `agent` id. If the id is already in workspace.yaml
+   * `agents:` we accept it. If not, look it up in the discovered
+   * project/global agent files — when found, plan an auto-sync entry so
+   * the runner can resolve the agent later. Returns the missing id when
+   * neither lookup succeeds.
+   *
+   * Doesn't mutate `doc` — caller applies `added` via `applySyncedAgents`
+   * inside its own `mutateYaml` block so the write is atomic with the
+   * pipeline push.
+   */
+  private ensureWorkspaceAgentsForSteps(
+    root: string,
+    doc: YamlDocument,
+    stepsRaw: unknown[],
+  ):
+    | { ok: true; added: SyncedAgentPlan[] }
+    | { ok: false; missing: string }
+  {
+    const existing = new Set(doc.agents.map((a) => String(a.id)));
+    const discovered = discoverAssets(root).agents;
+    const byId = new Map<string, DiscoveredAsset>();
+    for (const a of discovered) { byId.set(a.id, a); }
+
+    const added: SyncedAgentPlan[] = [];
+    const plannedIds = new Set<string>();
+
+    for (const raw of stepsRaw) {
+      if (!raw || typeof raw !== 'object') { continue; }
+      const id = String((raw as Record<string, unknown>).agent ?? '').trim();
+      if (!id) { return { ok: false, missing: '' }; }
+      if (existing.has(id) || plannedIds.has(id)) { continue; }
+      const file = byId.get(id);
+      if (!file) { return { ok: false, missing: id }; }
+
+      const fm = parseAgentFrontmatter(file.filePath);
+      const skillId = `${id}-skill`;
+      added.push({
+        agent: {
+          id,
+          name: fm.description ? id : id,
+          skills: [skillId],
+          model: fm.model,
+          capabilities: fm.tools,
+          description: fm.description,
+        },
+        skill: {
+          id: skillId,
+          // Reference the persona file directly — the runner uses
+          // `skills:` paths to load the prompt at dispatch time.
+          path: this.relPathFor(root, file.filePath),
+        },
+      });
+      plannedIds.add(id);
+    }
+    return { ok: true, added };
+  }
+
+  /**
+   * Append the planned `agents:` + `skills:` entries from
+   * `ensureWorkspaceAgentsForSteps` onto `doc`. Idempotent — skips ids
+   * already present in case mutateYaml re-read the doc between plan +
+   * apply.
+   */
+  private applySyncedAgents(doc: YamlDocument, added: SyncedAgentPlan[]): void {
+    const agentIds = new Set(doc.agents.map((a) => String(a.id)));
+    const skillIds = new Set(doc.skills.map((s) => String(s.id)));
+    for (const plan of added) {
+      if (!agentIds.has(plan.agent.id)) {
+        const agent: Record<string, unknown> = {
+          id: plan.agent.id,
+          name: plan.agent.name,
+          skills: plan.agent.skills,
+        };
+        if (plan.agent.model) { agent.model = plan.agent.model; }
+        if (plan.agent.description) { agent.description = plan.agent.description; }
+        if (plan.agent.capabilities && plan.agent.capabilities.length > 0) {
+          agent.capabilities = plan.agent.capabilities;
+        }
+        doc.agents.push(agent);
+        agentIds.add(plan.agent.id);
+      }
+      if (!skillIds.has(plan.skill.id)) {
+        doc.skills.push({ id: plan.skill.id, path: plan.skill.path });
+        skillIds.add(plan.skill.id);
+      }
+    }
+  }
+
+  /**
+   * Best-effort path normalization for workspace.yaml `skills[].path`.
+   * Files under the workspace get a project-relative path; absolute paths
+   * outside (e.g. `~/.claude/agents/aidlc-po.md`) keep the `~/` form so
+   * the YAML stays portable across machines.
+   */
+  private relPathFor(root: string, abs: string): string {
+    const home = os.homedir();
+    if (abs.startsWith(home)) { return '~' + abs.slice(home.length); }
+    const rel = path.relative(root, abs);
+    return rel && !rel.startsWith('..') ? rel : abs;
+  }
+
   private async addPipelineInline(draft: Record<string, unknown>): Promise<void> {
     const root = this.getRootOrWarn();
     if (!root) { return; }
@@ -1709,18 +2219,27 @@ ${sections.join('\n').trimEnd()}
       return;
     }
 
-    const agentIds = new Set(doc.agents.map((a) => String(a.id)));
+    // Resolve every step's agent id. Steps referencing file-based agents
+    // (project / global scope) won't have a matching workspace.yaml entry
+    // yet — auto-sync one from the persona .md frontmatter so the runner
+    // can dispatch them. Aborts only when an id is neither in workspace
+    // nor in the discovered file set.
+    const sync = this.ensureWorkspaceAgentsForSteps(root, doc, stepsRaw);
+    if (!sync.ok) {
+      void vscode.window.showWarningMessage(
+        `Step references unknown agent "${sync.missing}". Aborting.`,
+      );
+      return;
+    }
     const steps: unknown[] = [];
     for (const raw of stepsRaw) {
       if (!raw || typeof raw !== 'object') { continue; }
       const r = raw as Record<string, unknown>;
       const agent = String(r.agent ?? '').trim();
-      if (!agent || !agentIds.has(agent)) {
-        void vscode.window.showWarningMessage(
-          `Step references unknown agent "${agent}". Aborting.`,
-        );
-        return;
-      }
+      const stepName = typeof r.name === 'string' ? r.name.trim() : '';
+      const skillsArr = Array.isArray(r.skills)
+        ? (r.skills as unknown[]).map(String).filter((s) => s.length > 0)
+        : [];
       const human_review = r.human_review === true;
       const auto_review = r.auto_review === true;
       const runner = typeof r.auto_review_runner === 'string' ? r.auto_review_runner.trim() : '';
@@ -1738,11 +2257,18 @@ ${sections.join('\n').trimEnd()}
         human_review,
         auto_review,
       };
+      if (stepName) { step.name = stepName; }
+      if (skillsArr.length > 0) { step.skills = skillsArr; }
       if (auto_review) { step.auto_review_runner = runner; }
       steps.push(step);
     }
 
     this.mutateYaml((d) => {
+      // Re-apply the synced workspace.yaml additions on the fresh doc this
+      // mutateYaml session reads back from disk. Otherwise the write below
+      // would clobber the entries `ensureWorkspaceAgentsForSteps` added on
+      // the stale `doc` it received.
+      this.applySyncedAgents(d, sync.added);
       d.pipelines.push({ id, steps, on_failure: onFailure });
     });
 
@@ -1880,7 +2406,17 @@ ${sections.join('\n').trimEnd()}
       return;
     }
 
-    const agentIds = new Set(doc.agents.map((a) => String(a.id)));
+    // Auto-sync workspace.yaml entries for any file-based agents the user
+    // picked. Same mechanism as `addPipelineInline` — without this an
+    // edit that swaps to a project/global agent would abort here even
+    // though the agent file exists.
+    const sync = this.ensureWorkspaceAgentsForSteps(root, doc, stepsRaw);
+    if (!sync.ok) {
+      void vscode.window.showWarningMessage(
+        `Step references unknown agent "${sync.missing}". Aborting.`,
+      );
+      return;
+    }
 
     // Preserve requires/produces from the existing pipeline by agent id —
     // first occurrence consumed per match so duplicate-agent steps still
@@ -1900,12 +2436,10 @@ ${sections.join('\n').trimEnd()}
       if (!raw || typeof raw !== 'object') { continue; }
       const r = raw as Record<string, unknown>;
       const agent = String(r.agent ?? '').trim();
-      if (!agent || !agentIds.has(agent)) {
-        void vscode.window.showWarningMessage(
-          `Step references unknown agent "${agent}". Aborting.`,
-        );
-        return;
-      }
+      const stepName = typeof r.name === 'string' ? r.name.trim() : '';
+      const skillsArr = Array.isArray(r.skills)
+        ? (r.skills as unknown[]).map(String).filter((s) => s.length > 0)
+        : [];
       const human_review = r.human_review === true;
       const auto_review = r.auto_review === true;
       const runner = typeof r.auto_review_runner === 'string' ? r.auto_review_runner.trim() : '';
@@ -1925,11 +2459,17 @@ ${sections.join('\n').trimEnd()}
         human_review,
         auto_review,
       };
+      if (stepName) { step.name = stepName; }
+      if (skillsArr.length > 0) { step.skills = skillsArr; }
       if (auto_review) { step.auto_review_runner = runner; }
       newSteps.push(step);
     }
 
     this.mutateYaml((d) => {
+      // Commit synced agents/skills in the same write that updates the
+      // pipeline, so the runner never sees a step referencing an agent
+      // that hasn't been added yet.
+      this.applySyncedAgents(d, sync.added);
       const p = d.pipelines.find((x) => x.id === id);
       if (!p) { return false; }
       p.steps = newSteps;
@@ -1941,6 +2481,134 @@ ${sections.join('\n').trimEnd()}
         .map((s) => (s as { agent: string }).agent)
         .join(' → ')}`,
     );
+  }
+
+  /**
+   * Append a new step that runs in parallel with an existing step: clone
+   * the source step's `depends_on` so the new step lands at the same DAG
+   * level. The new step is appended to `pipeline.steps[]`; DAG column
+   * placement is driven by `depends_on`, not array order, so it'll render
+   * next to the source step.
+   *
+   * Verifies the chosen agent exists in workspace.yaml. No-op if the source
+   * agent isn't in the pipeline (shouldn't happen via UI, defensive).
+   */
+  private async addParallelStep(
+    pipelineId: string,
+    parallelToAgent: string,
+    agentId: string,
+  ): Promise<void> {
+    if (!pipelineId || !parallelToAgent || !agentId) { return; }
+    const root = this.getRootOrWarn();
+    if (!root) { return; }
+    const doc = readYaml(root);
+    if (!doc) { return; }
+    if (!doc.agents.some((a) => String(a.id) === agentId)) {
+      void vscode.window.showWarningMessage(
+        `Agent "${agentId}" not found in workspace.yaml. Add it before placing it in a pipeline.`,
+      );
+      return;
+    }
+
+    // Reject duplicates: agent ids must be unique within a pipeline because
+    // `depends_on` references them by name. Adding a second `design` step
+    // creates two nodes that look interchangeable in YAML but only one wins
+    // when other steps resolve `depends_on: ['design']`, which corrupts the
+    // DAG layout (the original `design` gets pulled to whichever level the
+    // duplicate ended up at).
+    const pipeline = doc.pipelines.find((x) => x.id === pipelineId);
+    if (!pipeline || !Array.isArray(pipeline.steps)) { return; }
+    const alreadyInPipeline = (pipeline.steps as PipelineStepConfig[]).some(
+      (s) => (typeof s === 'string' ? s : (s as { agent?: unknown }).agent) === agentId,
+    );
+    if (alreadyInPipeline) {
+      void vscode.window.showWarningMessage(
+        `Agent "${agentId}" is already a step in this workflow. Pick a different agent — DAG dependencies reference agents by name, so duplicates aren't supported.`,
+      );
+      return;
+    }
+
+    this.mutateYaml((mdoc) => {
+      const pipeline = mdoc.pipelines.find((x) => x.id === pipelineId);
+      if (!pipeline || !Array.isArray(pipeline.steps)) { return false; }
+      const steps = pipeline.steps as PipelineStepConfig[];
+
+      const stepAgent = (s: PipelineStepConfig): string =>
+        typeof s === 'string'
+          ? s
+          : typeof (s as { agent?: unknown }).agent === 'string'
+            ? (s as { agent: string }).agent
+            : '';
+      const stepDeps = (s: PipelineStepConfig): string[] => {
+        if (typeof s === 'string') { return []; }
+        const d = (s as { depends_on?: unknown }).depends_on;
+        return Array.isArray(d) ? d.map(String) : [];
+      };
+
+      // Auto-upgrade linear → DAG when needed. A pipeline with no
+      // `depends_on` edges is "linear" — execution order is the array
+      // index. If we just append a parallel step there with empty deps,
+      // every existing step still has empty deps too, so `hasDagShape`
+      // stays false and the UI keeps rendering as a linear chain — the
+      // parallel relationship the user just created would be invisible.
+      // Fix: when a linear pipeline gains its first parallel step, inflate
+      // each existing step's `depends_on` from positional order so the
+      // chain becomes an explicit DAG. The picker step that was the
+      // parallel target keeps its (possibly empty) deps; downstream nodes
+      // chain off it as before.
+      const usesDag = steps.some((s) => stepDeps(s).length > 0);
+      if (!usesDag) {
+        let prevAgent = '';
+        for (let i = 0; i < steps.length; i++) {
+          const s = steps[i];
+          const agent = stepAgent(s);
+          if (!agent) { continue; }
+          const inflated: Record<string, unknown> = {
+            agent,
+            enabled: typeof s === 'string'
+              ? true
+              : (s as { enabled?: unknown }).enabled !== false,
+            requires: typeof s === 'string'
+              ? []
+              : Array.isArray((s as { requires?: unknown }).requires)
+                ? ((s as { requires: unknown[] }).requires as unknown[])
+                : [],
+            produces: typeof s === 'string'
+              ? []
+              : Array.isArray((s as { produces?: unknown }).produces)
+                ? ((s as { produces: unknown[] }).produces as unknown[])
+                : [],
+            human_review: typeof s === 'string'
+              ? true
+              : (s as { human_review?: unknown }).human_review !== false,
+            auto_review: typeof s !== 'string'
+              && (s as { auto_review?: unknown }).auto_review === true,
+          };
+          const runner = typeof s === 'string'
+            ? undefined
+            : (s as { auto_review_runner?: unknown }).auto_review_runner;
+          if (typeof runner === 'string') { inflated.auto_review_runner = runner; }
+          if (i > 0 && prevAgent) { inflated.depends_on = [prevAgent]; }
+          steps[i] = inflated as unknown as PipelineStepConfig;
+          prevAgent = agent;
+        }
+      }
+
+      const source = steps.find((s) => stepAgent(s) === parallelToAgent);
+      if (!source) { return false; }
+      const sourceDeps = stepDeps(source);
+
+      const newStep: Record<string, unknown> = {
+        agent: agentId,
+        enabled: true,
+        requires: [],
+        produces: [],
+        human_review: true,
+        auto_review: false,
+      };
+      if (sourceDeps.length > 0) { newStep.depends_on = sourceDeps; }
+      steps.push(newStep as unknown as PipelineStepConfig);
+    });
   }
 
   private async addStepToPipeline(pipelineId: string, agentIdArg?: string): Promise<void> {
@@ -1994,7 +2662,43 @@ ${sections.join('\n').trimEnd()}
       const p = d.pipelines.find((x) => x.id === pipelineId);
       if (!p) { return false; }
       const steps = Array.isArray(p.steps) ? (p.steps as PipelineStepConfig[]) : [];
-      steps.push(chosenId!);
+
+      // Append semantics:
+      //   sequential pipeline (no depends_on anywhere) → bare string, runner
+      //     advances by index.
+      //   DAG pipeline → new step must depend on the current leaves
+      //     (steps nobody else depends on) so it lands *after* them in the
+      //     visual flow. Otherwise it gets no deps and lands at level 0
+      //     parallel with the roots.
+      const normalized = steps.map((s) => {
+        if (typeof s === 'string') { return { agent: s, deps: [] as string[] }; }
+        const obj = s as { agent?: unknown; depends_on?: unknown };
+        const deps = Array.isArray(obj.depends_on) ? obj.depends_on.map(String) : [];
+        return { agent: typeof obj.agent === 'string' ? obj.agent : '', deps };
+      });
+      const usesDag = normalized.some((n) => n.deps.length > 0);
+
+      if (!usesDag) {
+        steps.push(chosenId!);
+      } else {
+        const referenced = new Set<string>();
+        for (const n of normalized) {
+          for (const d of n.deps) { referenced.add(d); }
+        }
+        const leafAgents = normalized
+          .map((n) => n.agent)
+          .filter((a) => a && !referenced.has(a));
+        const newStep: Record<string, unknown> = {
+          agent: chosenId!,
+          enabled: true,
+          requires: [],
+          produces: [],
+          human_review: true,
+          auto_review: false,
+        };
+        if (leafAgents.length > 0) { newStep.depends_on = leafAgents; }
+        steps.push(newStep as unknown as PipelineStepConfig);
+      }
       p.steps = steps;
     });
   }
@@ -2017,38 +2721,79 @@ ${sections.join('\n').trimEnd()}
 
     if (!skipConfirm) {
       const confirm = await vscode.window.showWarningMessage(
-        `Delete workflow \`${id}\` and uninstall its agents/skills from ~/.claude/?`,
+        `Delete workflow \`${id}\` and uninstall its unused agents/skills from ~/.claude/?`,
         { modal: true }, 'Delete', 'Cancel',
       );
       if (confirm !== 'Delete') { return; }
     }
 
-    const slug = workflowSlug(builtin);
-    const prefix = `${slug}-`;
-    const slashPrefix = `/${slug}-`;
+    // Phase ids this pipeline owns. Sharing-aware: another pipeline (built-in
+    // or user-defined) still in workspace.yaml may reference the same id, so
+    // we only remove ids that are *exclusively* used by the pipeline we're
+    // deleting.
+    const myPhaseIds = new Set(builtin.phases.map((p) => p.id));
 
     this.mutateYaml((doc) => {
-      doc.agents = doc.agents.filter((a) => !String(a.id).startsWith(prefix));
-      doc.skills = doc.skills.filter((s) => !String(s.id).startsWith(prefix));
+      const stillNeeded = new Set<string>();
+      for (const p of doc.pipelines) {
+        if (String(p.id) === id) { continue; }
+        for (const step of (p.steps ?? []) as Array<string | { agent?: unknown }>) {
+          const agent = typeof step === 'string'
+            ? step
+            : typeof step.agent === 'string' ? step.agent : '';
+          if (agent) { stillNeeded.add(agent); }
+        }
+      }
+      const toRemove = new Set<string>(
+        [...myPhaseIds].filter((pid) => !stillNeeded.has(pid)),
+      );
+
+      doc.agents = doc.agents.filter((a) => !toRemove.has(String(a.id)));
+      doc.skills = doc.skills.filter((s) => !toRemove.has(String(s.id)));
       doc.slash_commands = doc.slash_commands.filter(
-        (c) => !String(c.name).startsWith(slashPrefix),
+        (c) => !toRemove.has(String(c.name).replace(/^\//, '')),
       );
       doc.pipelines = doc.pipelines.filter((p) => String(p.id) !== id);
+
+      // Stash the to-remove set on the closure so the FS cleanup below can
+      // use the same set without re-reading workspace.yaml.
+      Object.assign(this, { _lastDeletePhaseIds: toRemove });
     });
+
+    const toRemove: Set<string> = (this as unknown as { _lastDeletePhaseIds?: Set<string> })
+      ._lastDeletePhaseIds ?? new Set();
 
     const root = this.getRootOrWarn();
     if (root) {
       const commandsDir = path.join(root, '.claude', 'commands');
       if (fs.existsSync(commandsDir)) {
         for (const file of fs.readdirSync(commandsDir)) {
-          if (file.startsWith(prefix) && file.endsWith('.md')) {
+          if (!file.endsWith('.md')) { continue; }
+          const cmdId = file.slice(0, -3);
+          if (toRemove.has(cmdId)) {
             try { fs.unlinkSync(path.join(commandsDir, file)); } catch { /* non-fatal */ }
           }
         }
       }
     }
 
-    uninstallWorkflowGlobalsByIds([builtin.id]);
+    // Overlap source = workflows still applied in workspace.yaml after the
+    // delete. If the user removes their only applied pipeline, every file
+    // gets cleaned up — even shared ones — because nothing else needs them.
+    // Falling back to "any globally-installed workflow" would over-preserve
+    // (the parallel + sequential workflows share `templates/sdlc/`, so each
+    // sees the other as installed even when neither is applied).
+    const root2 = this.getRootOrWarn();
+    const remainingPipelines = root2 ? (readYaml(root2)?.pipelines ?? []) : [];
+    const preserveWorkflowIds = remainingPipelines
+      .map((p) => getBuiltinWorkflowByPipelineId(String(p.id))?.id)
+      .filter((id): id is string => Boolean(id));
+    uninstallWorkflowGlobalsByIds(
+      [builtin.id],
+      undefined,
+      this.extensionUri.fsPath,
+      preserveWorkflowIds,
+    );
     this.refresh();
   }
 
@@ -2189,7 +2934,7 @@ ${sections.join('\n').trimEnd()}
     if (fallback) { return fallback; }
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (root) { this.ensureWorkflowTemplates(root); }
-    const initialState = buildState(this.currentView, this.extensionUri.fsPath);
+    const initialState = buildState(this.currentView);
     const initialTheme = themeManager.current;
 
     const assetsRoot = vscode.Uri.joinPath(this.extensionUri, 'out', 'webviews');

@@ -37,8 +37,12 @@ export function BuilderView({ state }: { state: WorkspaceState }) {
     ? 'Add Skill'
     : 'Start Epic';
 
-  const aidlcAgents = useMemo(
-    () => state.agents.filter((a) => a.scope === 'aidlc'),
+  // Agent picker shown in AddPipelineModal — project + global only.
+  // Mirrors the Agents tab so the user picks from the same set they see
+  // in the Builder, not the workspace.yaml-only AIDLC layer (which is
+  // hidden from the UI for this exact reason).
+  const pipelineAgents = useMemo(
+    () => state.agents.filter((a) => a.scope === 'project' || a.scope === 'global'),
     [state.agents],
   );
 
@@ -114,7 +118,7 @@ export function BuilderView({ state }: { state: WorkspaceState }) {
         ))}
       </div>
 
-      {tab === 'agents' && <AgentsByScope agents={state.agents} />}
+      {tab === 'agents' && <AgentsByScope agents={state.agents} skills={state.skills} />}
       {tab === 'skills' && <SkillsByScope skills={state.skills} />}
       {tab === 'workflows' && <PipelinesGrid state={state} />}
       {tab === 'epics' && <EpicsMiniGrid state={state} />}
@@ -122,7 +126,7 @@ export function BuilderView({ state }: { state: WorkspaceState }) {
       {addPipelineOpen && (
         <PipelineModal
           mode="add"
-          agents={aidlcAgents}
+          agents={pipelineAgents}
           existingPipelineIds={state.pipelines.map((p) => p.id)}
           onSubmit={(draft) =>
             postMessage({ type: 'addPipelineInline', draft })
@@ -142,6 +146,8 @@ export function BuilderView({ state }: { state: WorkspaceState }) {
         <AddAgentModal
           takenIds={allAgentIds}
           skills={state.skills}
+          skillTemplates={state.skillTemplates}
+          takenSkillIds={allSkillIds}
           onSubmit={(draft) => postMessage({ type: 'addAgentInline', draft })}
           onClose={() => setAddAgentOpen(false)}
         />
@@ -165,9 +171,10 @@ function pickInitialScope<T extends { scope: AssetScope }>(
   items: T[],
   persisted: AssetScope | undefined,
 ): AssetScope {
-  // AIDLC scope (workspace.yaml-declared assets) is intentionally hidden
-  // from the source picker — pipelines still resolve them at runtime, but
-  // the Builder lists only file-backed scopes the user actually navigates.
+  // AIDLC scope is intentionally hidden from the picker dropdown — never
+  // return it here, otherwise the dropdown shows the wrong label (its
+  // option doesn't exist) and the list filter quietly displays the
+  // hidden bucket. Picker has only project + global now.
   if (persisted === 'project' || persisted === 'global') {
     if (items.some((i) => i.scope === persisted)) { return persisted; }
   }
@@ -200,7 +207,7 @@ function ScopeFilter({
   );
 }
 
-function AgentsByScope({ agents }: { agents: AgentSummary[] }) {
+function AgentsByScope({ agents, skills }: { agents: AgentSummary[]; skills: SkillSummary[] }) {
   const grouped = useMemo(() => groupByScope(agents), [agents]);
   const counts = { project: grouped.project.length, aidlc: grouped.aidlc.length, global: grouped.global.length };
   const [scope, setScope] = useState<AssetScope>(() =>
@@ -234,7 +241,7 @@ function AgentsByScope({ agents }: { agents: AgentSummary[] }) {
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {list.map((a) => (
-            <AgentCard key={`${a.scope}/${a.id}`} agent={a} allAgentIds={aidlcIds} />
+            <AgentCard key={`${a.scope}/${a.id}`} agent={a} allAgentIds={aidlcIds} skills={skills} />
           ))}
         </div>
       )}
@@ -419,7 +426,11 @@ function PipelinesGrid({ state }: { state: WorkspaceState }) {
   }, [state.pipelines]);
 
   if (state.pipelines.length === 0) { return <EmptyHint kind="pipelines" />; }
-  const aidlcAgents = state.agents.filter((a) => a.scope === 'aidlc');
+  // PipelineCard renders existing steps + lets the user swap the agent on
+  // each row. Existing built-in pipelines reference workspace.yaml-only
+  // AIDLC agents (`plan`, `design`, …); new ones reference file-based
+  // project/global agents. Pass the union so both render correctly.
+  const allAgents = state.agents;
   const selected = state.pipelines.find((p) => p.id === selectedId) ?? state.pipelines[0];
 
   const onChange = (id: string) => {
@@ -463,7 +474,7 @@ function PipelinesGrid({ state }: { state: WorkspaceState }) {
           {state.pipelines.length} available
         </span>
       </div>
-      <PipelineCard pipeline={selected} agents={aidlcAgents} runIds={state.runIds} />
+      <PipelineCard pipeline={selected} agents={allAgents} runIds={state.runIds} />
     </div>
   );
 }

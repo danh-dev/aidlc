@@ -39,10 +39,27 @@ interface PhaseDef {
   artifact: string;
   humanReview: boolean;
   autoReview: boolean;
-  autoReviewRunner?: string; // path to runner script, required when autoReview is true
+  autoReviewRunner?: string; // path to runner script, required when autoReview is true;
+  /**
+   * MCP integrations / Claude tools the agent has access to. Surfaced in
+   * the AgentCard as `integrations` chips; the runner can opt into MCP
+   * tools matching these ids when launching the agent.
+   */
+  capabilities?: string[];
+  /**
+   * Agent ids (after namespacing — i.e. `<slug>-<phaseId>`) this phase
+   * depends on for DAG pipelines. Empty / omitted = legacy sequential
+   * (the runner falls back to "open the next index after approve").
+   */
+  dependsOn?: string[];
 }
 
-const PHASES: PhaseDef[] = [
+/**
+ * Sequential SDLC phases — one step at a time, classic linear flow.
+ *
+ *     plan → design → test-plan → implement → review → execute-test → release → monitor → doc-sync
+ */
+const PHASES_SEQUENTIAL: PhaseDef[] = [
   {
     id: 'plan', name: 'Plan', persona: 'po', skillFile: 'epic', model: 'claude-opus-4-7',
     description: 'Scaffold the epic and write the PRD.',
@@ -50,6 +67,9 @@ const PHASES: PhaseDef[] = [
     outputs: 'Epic doc + PRD with measurable acceptance criteria',
     artifact: 'PRD.md',
     humanReview: true, autoReview: false,
+    // PO needs to read tickets, designs, and existing product docs to write
+    // a complete PRD. Web for stakeholder research.
+    capabilities: ['jira', 'figma', 'core-business', 'web'],
   },
   {
     id: 'design', name: 'Design', persona: 'tech-lead', skillFile: 'tech-design', model: 'claude-opus-4-7',
@@ -58,6 +78,8 @@ const PHASES: PhaseDef[] = [
     outputs: 'Architecture, API contract, DI plan, file impact list',
     artifact: 'TECH-DESIGN.md',
     humanReview: true, autoReview: false,
+    // Tech Lead reads PRD + existing code + arch docs to design the approach.
+    capabilities: ['files', 'github', 'core-business'],
   },
   {
     id: 'test-plan', name: 'Test Plan', persona: 'qa', skillFile: 'test-plan', model: 'claude-sonnet-4-6',
@@ -66,6 +88,7 @@ const PHASES: PhaseDef[] = [
     outputs: 'Test cases (UT / UI / integration / performance), device matrix',
     artifact: 'TEST-PLAN.md',
     humanReview: true, autoReview: false,
+    capabilities: ['files', 'jira', 'core-business', 'its'],
   },
   {
     id: 'implement', name: 'Implement', persona: 'developer', skillFile: null, model: 'claude-sonnet-4-6',
@@ -74,6 +97,8 @@ const PHASES: PhaseDef[] = [
     outputs: 'Code + unit tests on feature branch, PR opened',
     artifact: 'feature/<EPIC>-<slug>',
     humanReview: true, autoReview: true, autoReviewRunner: '.aidlc/scripts/ci.sh',
+    // Developer needs full file access + GitHub for PR / commit operations.
+    capabilities: ['files', 'github'],
   },
   {
     id: 'review', name: 'Review', persona: 'auto-reviewer', skillFile: 'review', model: 'claude-opus-4-7',
@@ -82,6 +107,7 @@ const PHASES: PhaseDef[] = [
     outputs: 'AC validation table, architecture check, verdict (pass / reject)',
     artifact: 'APPROVAL.md',
     humanReview: true, autoReview: false,
+    capabilities: ['files', 'github'],
   },
   {
     id: 'execute-test', name: 'Execute Test', persona: 'qa', skillFile: 'execute-test', model: 'claude-sonnet-4-6',
@@ -90,6 +116,7 @@ const PHASES: PhaseDef[] = [
     outputs: 'Test execution report, tester sign-off',
     artifact: 'TEST-SCRIPT.md',
     humanReview: true, autoReview: false,
+    capabilities: ['files', 'jira', 'its'],
   },
   {
     id: 'release', name: 'Release', persona: 'release-manager', skillFile: 'release', model: 'claude-sonnet-4-6',
@@ -98,6 +125,9 @@ const PHASES: PhaseDef[] = [
     outputs: 'Release checklist, app store / changelog notes, version tag',
     artifact: 'v<X.Y.Z> tag',
     humanReview: true, autoReview: false,
+    // RM needs GitHub for cutting tags / release notes and Slack to
+    // announce the release.
+    capabilities: ['github', 'slack'],
   },
   {
     id: 'monitor', name: 'Monitor', persona: 'sre', skillFile: 'monitor', model: 'claude-sonnet-4-6',
@@ -106,6 +136,9 @@ const PHASES: PhaseDef[] = [
     outputs: 'Health report, KHI table, Go / Hotfix decision',
     artifact: 'HEALTH-REPORT.md',
     humanReview: true, autoReview: false,
+    // SRE pulls support tickets / alerts. Slack for paging, web for
+    // dashboard / external alerts.
+    capabilities: ['slack', 'web', 'jira'],
   },
   {
     id: 'doc-sync', name: 'Doc Sync', persona: 'archivist', skillFile: 'doc-sync', model: 'claude-sonnet-4-6',
@@ -114,7 +147,43 @@ const PHASES: PhaseDef[] = [
     outputs: 'Updated core-business / architecture docs, reverse-sync checklist',
     artifact: 'DOC-REVERSE-SYNC.md',
     humanReview: true, autoReview: false,
+    capabilities: ['files', 'github', 'core-business'],
   },
+];
+
+/**
+ * Parallel SDLC phases — DAG shape so QA runs concurrently with engineering.
+ *
+ *     plan → ┬─ design   ─┬─ implement              ─┐
+ *            │            │                          ├─→ execute-test → release → doc-sync
+ *            └─ test-plan ┴─ generate-test-cases   ─┘
+ *
+ * Task breakdown lives inside `design` (Tech Lead writes the tech design
+ * + the engineering task list in one artifact) — no separate `planning`
+ * phase. Phase ids that overlap with the sequential workflow (`plan`,
+ * `design`, `test-plan`, `implement`, `execute-test`, `release`,
+ * `doc-sync`) share the same agent / skill / global file with sequential.
+ * Only `generate-test-cases` is parallel-only.
+ */
+const PHASES_PARALLEL: PhaseDef[] = [
+  PHASES_SEQUENTIAL[0], // plan
+  { ...PHASES_SEQUENTIAL[1], dependsOn: ['plan'] },     // design
+  { ...PHASES_SEQUENTIAL[2], dependsOn: ['plan'] },     // test-plan
+  { ...PHASES_SEQUENTIAL[3], dependsOn: ['design'] },   // implement
+  {
+    id: 'generate-test-cases', name: 'Generate Test Cases', persona: 'qa',
+    skillFile: 'generate-test-cases', model: 'claude-sonnet-4-6',
+    description: 'Concrete, executable test cases derived from the test plan.',
+    inputs: 'Test plan, acceptance criteria',
+    outputs: 'Executable test cases (UI/IT scripts, fixtures, data) + TEST-CASES.md',
+    artifact: 'TEST-CASES.md',
+    humanReview: true, autoReview: false,
+    capabilities: ['files', 'jira', 'its'],
+    dependsOn: ['test-plan'],
+  },
+  { ...PHASES_SEQUENTIAL[5], dependsOn: ['implement', 'generate-test-cases'] }, // execute-test
+  { ...PHASES_SEQUENTIAL[6], dependsOn: ['execute-test'] },                     // release
+  { ...PHASES_SEQUENTIAL[8], dependsOn: ['release'] },                          // doc-sync
 ];
 
 /**
@@ -133,7 +202,7 @@ into working code on a feature branch.
 
 **Workflow**
 
-1. Read \`docs/sdlc/epics/<KEY>/TECH-DESIGN.md\` and \`docs/sdlc/epics/<KEY>/TEST-PLAN.md\`.
+1. Read \`docs/epics/<KEY>/TECH-DESIGN.md\` and \`docs/epics/<KEY>/TEST-PLAN.md\`.
 2. Create a feature branch \`feature/<KEY>-<short-slug>\` from main.
 3. Implement files listed in the design's File Impact section.
 4. Write the unit tests called out in the test plan as you go (test-first
@@ -169,6 +238,11 @@ export interface BuiltinWorkflow {
   name: string;
   templatesDir: string;
   description: string;
+  /**
+   * Phase shape for this workflow. Defaults to the sequential SDLC phases.
+   * Parallel workflows declare a DAG via per-phase `dependsOn` arrays.
+   */
+  phases: PhaseDef[];
 }
 
 export const BUILTIN_WORKFLOWS: BuiltinWorkflow[] = [
@@ -178,63 +252,17 @@ export const BUILTIN_WORKFLOWS: BuiltinWorkflow[] = [
     name: 'SDLC Pipeline',
     templatesDir: 'sdlc',
     description:
-      'Generic SDLC pipeline: Plan → Design → Test Plan → Implement → Review → Execute Test → Release → Monitor → Doc Sync. Stack-neutral baseline with PO / Tech Lead / QA / Developer / RM / SRE / Archivist agents.',
+      'Sequential SDLC pipeline: Plan → Design → Test Plan → Implement → Review → Execute Test → Release → Monitor → Doc Sync. One step at a time, PO / Tech Lead / QA / Developer / RM / SRE / Archivist.',
+    phases: PHASES_SEQUENTIAL,
   },
   {
-    id: 'electron-app-pipeline',
-    pipelineId: 'electron-app-full',
-    name: 'Electron App Pipeline',
-    templatesDir: 'electron-app',
+    id: 'sdlc-parallel-pipeline',
+    pipelineId: 'sdlc-parallel-full',
+    name: 'SDLC Parallel Pipeline',
+    templatesDir: 'sdlc',
     description:
-      'Desktop apps on Electron — main/renderer split, IPC contextBridge, auto-update, code signing & notarization, Playwright + Spectron-style e2e, electron-builder release flow.',
-  },
-  {
-    id: 'ios-native-pipeline',
-    pipelineId: 'ios-native-full',
-    name: 'iOS Native Pipeline',
-    templatesDir: 'ios-native',
-    description:
-      'Native iOS apps — Swift / SwiftUI / Combine / Swift Concurrency, XCTest + XCUITest, SPM, fastlane, TestFlight beta, App Store rollout, MetricKit observability.',
-  },
-  {
-    id: 'web-app-pipeline',
-    pipelineId: 'web-app-full',
-    name: 'Web App Pipeline',
-    templatesDir: 'web-app',
-    description:
-      'Modern web apps — TypeScript + React (Next.js or Vite), TanStack Query, Zod, Playwright + Vitest + Testing Library, Core Web Vitals, Vercel/Cloud-Run release flow.',
-  },
-  {
-    id: 'backend-dotnet-pipeline',
-    pipelineId: 'backend-dotnet-full',
-    name: 'Backend .NET Pipeline',
-    templatesDir: 'backend-dotnet',
-    description:
-      'ASP.NET Core services — Minimal APIs, EF Core, FluentValidation, Serilog + OpenTelemetry, xUnit + Testcontainers, dotnet-format, Helm/ACR release flow.',
-  },
-  {
-    id: 'backend-spring-boot-pipeline',
-    pipelineId: 'backend-spring-boot-full',
-    name: 'Backend Spring Boot Pipeline',
-    templatesDir: 'backend-spring-boot',
-    description:
-      'Spring Boot 3 services — JPA/Hibernate, Bean Validation, Resilience4j, Micrometer + OpenTelemetry, JUnit 5 + Testcontainers, Flyway migrations, Spring profiles release flow.',
-  },
-  {
-    id: 'backend-golang-pipeline',
-    pipelineId: 'backend-golang-full',
-    name: 'Backend Go Pipeline',
-    templatesDir: 'backend-golang',
-    description:
-      'Go services — chi/echo, sqlc + pgx, context-first APIs, structured logging (slog), table-driven tests + httptest, golangci-lint, goreleaser release flow.',
-  },
-  {
-    id: 'mobile-react-native-pipeline',
-    pipelineId: 'mobile-react-native-full',
-    name: 'Mobile React Native Pipeline',
-    templatesDir: 'mobile-react-native',
-    description:
-      'React Native (Expo or bare) — React Navigation, TanStack Query, Reanimated, Hermes, Jest + React Native Testing Library + Detox, EAS Submit / Fastlane release flow.',
+      'Parallel SDLC pipeline: Plan → Planning → (Design || Test Plan) → (Implement || Test Cases) → Execute Test → Release → Doc Sync. Shares agents / skills with the sequential workflow on overlapping phases. QA runs concurrently with engineering.',
+    phases: PHASES_PARALLEL,
   },
 ];
 
@@ -274,6 +302,22 @@ export function getBuiltinWorkflowByPipelineId(pipelineId: string): BuiltinWorkf
 }
 
 /**
+ * Resolve a phase's expected output path under the conventional epic root.
+ * Returns `null` for phases whose `artifact` isn't a regular file — git
+ * branches and version tags (e.g. `feature/<EPIC>-<slug>`, `v<X.Y.Z> tag`)
+ * can't be validated by file-existence, so the runner shouldn't try.
+ */
+function artifactPathFor(phase: PhaseDef): string | null {
+  const artifact = (phase.artifact ?? '').trim();
+  if (!artifact) { return null; }
+  // Bare filename pattern: ends in a recognized extension. Anything with a
+  // slash, space, or angle brackets is descriptive prose ("v<X.Y.Z> tag",
+  // "feature/<EPIC>-<slug>") and we skip it.
+  if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9]+$/.test(artifact)) { return null; }
+  return `docs/epics/{epic}/${artifact}`;
+}
+
+/**
  * Load + compose a built-in preset. Bundled .md files are read at
  * runtime from the extension's installed location, so the build pipeline
  * doesn't need a separate "compose preset JSON" step.
@@ -283,26 +327,15 @@ export function loadBuiltinPreset(extensionPath: string, workflow: BuiltinWorkfl
   const agentsDir = path.join(workflowDir, 'agents');
   const skillsDir = path.join(workflowDir, 'skills');
 
-  // Skill content lives in `~/.claude/skills/aidlc-<workflowId>-<phaseId>.md`,
-  // dropped there by `globalDefaultsInstaller` at extension activation. We
-  // keep `skillContents` empty so PresetStore.applyTo doesn't write a second
-  // copy under `.aidlc/skills/` — one source of truth, no per-workflow
-  // collision when multiple presets land in the same project.
-  //
-  // We still compose `skillContents[phase.id]` for the back-compat path
-  // (`.claude/commands/<phase>.md` writers read it) — but mark those entries
-  // for download-on-write paths only, not for the skills block.
+  // Compose the per-phase slash-command body (persona + phase work) for
+  // every phase. Used by the `.claude/commands/<phase>.md` writer; not
+  // emitted as a workspace.yaml skill entry.
   const skillContents: Record<string, string> = {};
-  const agents: Array<Record<string, unknown>> = [];
-  const skills: Array<Record<string, unknown>> = [];
-  const slashCommands: Array<Record<string, unknown>> = [];
-
-  for (const phase of PHASES) {
+  for (const phase of workflow.phases) {
     const personaPath = path.join(agentsDir, `${phase.persona}.md`);
     const persona = fs.existsSync(personaPath)
       ? fs.readFileSync(personaPath, 'utf8')
       : `# ${phase.name}\n\n(persona file missing: agents/${phase.persona}.md)\n`;
-
     let instruction: string;
     if (phase.skillFile) {
       const skillPath = path.join(skillsDir, `${phase.skillFile}.md`);
@@ -313,45 +346,102 @@ export function loadBuiltinPreset(extensionPath: string, workflow: BuiltinWorkfl
       instruction =
         IMPLEMENT_FALLBACK_INSTRUCTIONS[workflow.id] ?? IMPLEMENT_FALLBACK_INSTRUCTIONS.default;
     }
-
-    // Namespace every workspace.yaml id by the workflow's short slug so
-    // multiple built-in presets can land in the same project without
-    // colliding (e.g. iOS Native's `plan` agent vs Web App's `plan` agent).
-    // Drop the redundant `-pipeline` suffix from workflow.id for ergonomics:
-    // `sdlc-pipeline` → `sdlc`, `ios-native-pipeline` → `ios-native`.
-    const slug = workflowSlug(workflow);
-    const nsId = `${slug}-${phase.id}`;
-
-    skillContents[nsId] = composeSkill(persona, instruction, phase.id, workflow);
-
-    // Reference the global installer copy (`~/.claude/skills/...`). SkillLoader
-    // expands `~/` at load time so workspace.yaml stays portable.
-    skills.push({ id: nsId, path: `~/.claude/skills/aidlc-${workflow.id}-${phase.id}.md` });
-    agents.push({
-      id: nsId,
-      name: `${workflow.name}: ${phase.name}`,
-      skill: nsId,
-      model: phase.model,
-      description: phase.description,
-      inputs: phase.inputs,
-      outputs: phase.outputs,
-      artifact: phase.artifact,
-    });
-    slashCommands.push({ name: `/${nsId}`, agent: nsId });
+    skillContents[phase.id] = composeSkill(persona, instruction, phase.id, workflow);
   }
 
-  const slug = workflowSlug(workflow);
+  // Layout (3-layer: persona × skill × phase):
+  //   - workspace.yaml `agents:` — one entry per *unique persona*
+  //     (aidlc-po, aidlc-qa, …). `skills:` lists every phase id this
+  //     persona handles, so the user can see at a glance "QA does
+  //     test-plan, generate-test-cases, execute-test".
+  //   - workspace.yaml `skills:` — one entry per *phase* (plan,
+  //     design, test-plan, …). Each points at the composed skill file
+  //     at `~/.claude/skills/aidlc-<phase>.md` (persona + phase work
+  //     inlined by globalDefaultsInstaller).
+  //   - workspace.yaml `slash_commands:` — one per phase, slash name
+  //     matches phase id, mapped to the persona that runs it.
+  //   - Pipeline `steps:` carry `name` (phase id / slash command),
+  //     `agent` (persona), `skill` (phase id again — overrides the
+  //     agent default when the persona has multiple skills). That
+  //     trio is what the user sees: "test-plan step uses agent qa
+  //     and skill test-plan".
+
+  // Aggregate phase ids per persona so each agent's `skills:` array
+  // lists every phase that runs as that persona.
+  const phasesByPersona = new Map<string, PhaseDef[]>();
+  for (const phase of workflow.phases) {
+    const list = phasesByPersona.get(phase.persona) ?? [];
+    list.push(phase);
+    phasesByPersona.set(phase.persona, list);
+  }
+
+  // Skill IDs in workspace.yaml carry the `aidlc-` prefix so they match
+  // the on-disk filenames (`~/.claude/skills/aidlc-<phase>.md`) — this is
+  // also what the user sees on the per-step skill picker, so the displayed
+  // chips align with the actual global skill files (aidlc-test-plan,
+  // aidlc-execute-test, …) instead of bare phase ids that looked like
+  // unfamiliar custom names.
+  const skillIdOf = (p: PhaseDef): string => `aidlc-${p.id}`;
+
+  const agents: Array<Record<string, unknown>> = [];
+  for (const [persona, personaPhases] of phasesByPersona) {
+    const refPhase = personaPhases[0];
+    const caps = new Set<string>();
+    for (const p of personaPhases) {
+      for (const c of p.capabilities ?? []) { caps.add(c); }
+    }
+    const agent: Record<string, unknown> = {
+      id: `aidlc-${persona}`,
+      name: persona.replace(/\b\w/g, (c) => c.toUpperCase()).replace(/-/g, ' '),
+      // Every phase this persona handles becomes one of its skills.
+      // Step.skill picks which one for that particular step.
+      skills: personaPhases.map(skillIdOf),
+      model: refPhase.model,
+      description: `${persona} persona — handles ${personaPhases.map((p) => p.id).join(', ')}`,
+    };
+    if (caps.size > 0) { agent.capabilities = Array.from(caps); }
+    agents.push(agent);
+  }
+
+  // One skill entry per phase, pointing at the global composed file. The
+  // composed file is what `globalDefaultsInstaller` writes; it inlines
+  // the persona + phase-specific work so the runner sees a single
+  // self-contained prompt.
+  const skills: Array<Record<string, unknown>> = workflow.phases.map((p) => ({
+    id: skillIdOf(p),
+    path: `~/.claude/skills/aidlc-${p.id}.md`,
+  }));
+
+  const slashCommands: Array<Record<string, unknown>> = workflow.phases.map((p) => ({
+    name: `/${p.id}`,
+    agent: `aidlc-${p.persona}`,
+  }));
+
   const pipeline = {
     id: workflow.pipelineId,
-    steps: PHASES.map((p) => {
+    steps: workflow.phases.map((p) => {
+      // Default artifact path uses the conventional epic root (`docs/epics`).
+      // Users who set `state.root` to something else can edit `produces:`
+      // post-install — the runner / UI both honor whatever's on the step.
+      // A phase whose artifact is a branch / tag (e.g. `feature/<EPIC>-<slug>`,
+      // `v<X.Y.Z> tag`) skips `produces:` because there's no file to gate on.
+      const producesPath = artifactPathFor(p);
       const step: Record<string, unknown> = {
-        agent: `${slug}-${p.id}`,
+        name: p.id,
+        agent: `aidlc-${p.persona}`,
+        skills: [skillIdOf(p)],
         enabled: true,
         requires: [],
-        produces: [],
+        produces: producesPath ? [producesPath] : [],
         human_review: p.humanReview,
         auto_review: p.autoReview,
       };
+      if (p.dependsOn && p.dependsOn.length > 0) {
+        // Deps reference phase ids (step.name), not personas — multiple
+        // steps backed by the same persona stay distinct in the DAG
+        // (test-plan ⤴ plan, generate-test-cases ⤴ test-plan, both as aidlc-qa).
+        step.depends_on = p.dependsOn;
+      }
       if (p.autoReview && p.autoReviewRunner) {
         step.auto_review_runner = p.autoReviewRunner;
       }
@@ -384,15 +474,6 @@ export function loadBuiltinPreset(extensionPath: string, workflow: BuiltinWorkfl
     },
     skillContents,
   };
-}
-
-/**
- * Backward-compatible loader for the original SDLC preset. Newer call sites
- * should use `loadBuiltinPreset(extPath, getBuiltinWorkflow(id)!)` or
- * `loadAllBuiltinPresets()`.
- */
-export function loadSdlcPreset(extensionPath: string): WorkspacePreset {
-  return loadBuiltinPreset(extensionPath, BUILTIN_WORKFLOWS[0]);
 }
 
 /**
@@ -429,14 +510,11 @@ function composeSkill(persona: string, instruction: string, phaseId: string, wor
   ].join('\n');
 }
 
-/** Pipeline id for the original SDLC built-in workflow in workspace.yaml. */
-export const SDLC_PIPELINE_ID = BUILTIN_WORKFLOWS[0].pipelineId;
-
-export { PHASES };
+export { PHASES_PARALLEL };
 
 /**
  * Returns a static pipeline summary for a built-in workflow, built from the
- * PHASES constant — no file I/O needed.
+ * workflow's `phases` array — no file I/O needed.
  */
 export function getBuiltinPipelineSummary(workflow: BuiltinWorkflow) {
   return {
@@ -444,12 +522,18 @@ export function getBuiltinPipelineSummary(workflow: BuiltinWorkflow) {
     name: workflow.name,
     builtin: true as const,
     on_failure: 'stop' as const,
-    steps: PHASES.map((p) => ({
-      agent: p.id,
-      name: p.name,
+    steps: workflow.phases.map((p) => ({
+      // `name` = phase id (slash command + display label); `agent` =
+      // persona file (aidlc-po, aidlc-qa, …); `skills` = phase-scoped
+      // skill list. Mirrors what `loadBuiltinPreset` writes into
+      // workspace.yaml.
+      name: p.id,
+      agent: `aidlc-${p.persona}`,
+      skills: [p.id],
       enabled: true,
       produces: [] as string[],
       requires: [] as string[],
+      depends_on: p.dependsOn ?? [],
       human_review: p.humanReview,
       auto_review: p.autoReview,
       ...(p.autoReview && p.autoReviewRunner ? { auto_review_runner: p.autoReviewRunner } : {}),
@@ -536,7 +620,7 @@ export function phaseArtifactFileName(phase: PhaseDef): string {
 export function getBuiltinArtifactTemplates(extensionPath: string, workflow: BuiltinWorkflow): Record<string, string> {
   const artifactsDir = path.join(extensionPath, 'templates', workflow.templatesDir, 'artifacts');
   const result: Record<string, string> = {};
-  for (const phase of PHASES) {
+  for (const phase of workflow.phases) {
     const templatePath = path.join(artifactsDir, `${phase.id}.md`);
     const outFile = phaseArtifactFileName(phase);
     result[outFile] = fs.existsSync(templatePath)

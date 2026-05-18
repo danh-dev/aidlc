@@ -9,23 +9,21 @@ import {
   Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { AgentSummary } from '@/lib/types';
+import type { AgentSummary, SkillSummary } from '@/lib/types';
 import { postMessage } from '@/lib/bridge';
 import { RenameModal } from './RenameModal';
 import { ConfirmModal } from './ConfirmModal';
+import { EditAgentModal, type EditAgentDraft } from './EditAgentModal';
 
-// AIDLC scope is workspace.yaml-only and intentionally not surfaced as a
-// scope tag here — agents declared in workspace.yaml that the user can see
-// in the Builder come through project/global scopes via discovered .md files,
-// so a separate "AIDLC" badge would be noise. Keep the keyed maps in case
-// the design changes back.
 const scopeLabel: Partial<Record<AgentSummary['scope'], string>> = {
   project: 'PROJECT',
+  aidlc: 'WORKFLOW',
   global: 'GLOBAL',
 };
 
 const typeBadgeClass: Partial<Record<AgentSummary['scope'], string>> = {
   project: 'bg-warning/15 text-warning border-warning/30',
+  aidlc: 'bg-primary/15 text-primary border-primary/30',
   global: 'bg-success/15 text-success border-success/30',
 };
 
@@ -38,13 +36,17 @@ const integrationIcons: Record<string, React.ReactNode> = {
 export function AgentCard({
   agent,
   allAgentIds,
+  skills,
 }: {
   agent: AgentSummary;
   allAgentIds: string[];
+  /** Pickable skills surfaced in the EditAgentModal (project + global). */
+  skills: SkillSummary[];
 }) {
   const isAidlc = agent.scope === 'aidlc';
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const onCardClick = () => {
     if (isAidlc) {
       postMessage({ type: 'openYaml' });
@@ -98,29 +100,42 @@ export function AgentCard({
             </p>
           )}
         </div>
-        {isAidlc && (
-          <KebabMenu
-            items={[
-              {
-                label: 'Rename',
-                icon: <Pencil className="h-3 w-3" />,
-                onSelect: () => setRenameOpen(true),
-              },
-              {
-                label: 'Duplicate',
-                icon: <Copy className="h-3 w-3" />,
-                action: 'duplicateAgent',
-              },
-              {
-                label: 'Delete',
-                icon: <Trash2 className="h-3 w-3" />,
-                onSelect: () => setDeleteOpen(true),
-                danger: true,
-              },
-            ]}
-            payload={{ id: agent.id }}
-          />
-        )}
+        <div className="ml-2 flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setEditOpen(true);
+            }}
+            title="Edit agent (model, description, capabilities)"
+            className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+          >
+            <Pencil className="h-3 w-3" />
+          </button>
+          {isAidlc && (
+            <KebabMenu
+              items={[
+                {
+                  label: 'Rename',
+                  icon: <Pencil className="h-3 w-3" />,
+                  onSelect: () => setRenameOpen(true),
+                },
+                {
+                  label: 'Duplicate',
+                  icon: <Copy className="h-3 w-3" />,
+                  action: 'duplicateAgent',
+                },
+                {
+                  label: 'Delete',
+                  icon: <Trash2 className="h-3 w-3" />,
+                  onSelect: () => setDeleteOpen(true),
+                  danger: true,
+                },
+              ]}
+              payload={{ id: agent.id }}
+            />
+          )}
+        </div>
       </div>
 
       {(agent.skill || agent.model) && (
@@ -161,6 +176,16 @@ export function AgentCard({
             postMessage({ type: 'renameAgent', id: agent.id, newId })
           }
           onClose={() => setRenameOpen(false)}
+        />
+      )}
+      {editOpen && (
+        <EditAgentModal
+          agent={agent}
+          skills={skills}
+          onSubmit={(draft: EditAgentDraft) =>
+            postMessage({ type: 'editAgentInline', draft })
+          }
+          onClose={() => setEditOpen(false)}
         />
       )}
       {deleteOpen && (

@@ -22,14 +22,15 @@ import { PresetStore, type WorkspacePreset } from './presetStore';
 import {
   isBuiltinPreset,
   getBuiltinWorkflow,
-  PHASES,
   builtinClaudeCommand,
-  workflowSlug,
+  type BuiltinWorkflow,
 } from './builtinPresets';
 import {
   isWorkflowGloballyInstalled,
   installWorkflowGlobalsByIds,
 } from './globalDefaultsInstaller';
+import { resolveTechStackForRoot } from './techStackResolver';
+import { detectTechStack } from './techStackDetector';
 
 function getRoot(): string | undefined {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -202,7 +203,12 @@ export async function applyPresetCommand(
       );
       return;
     }
-    installWorkflowGlobalsByIds(extensionPath, [builtinWorkflow.id]);
+    installWorkflowGlobalsByIds(
+      extensionPath,
+      [builtinWorkflow.id],
+      undefined,
+      resolveTechStackForRoot(root),
+    );
   }
 
   const existing = readYaml(root);
@@ -221,6 +227,12 @@ export async function applyPresetCommand(
 
   const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name ?? path.basename(root);
   const result = PresetStore.applyTo(root, preset, workspaceName, { overwrite });
+
+  // Stamp the detected tech stack into workspace.yaml so subsequent
+  // re-installs (and the user reading the file) know which profile shaped
+  // the global skill files. Only writes when detection produced something
+  // and the field isn't already set.
+  ensureTechStackInYaml(root);
 
   // For built-in workflows, also drop `.claude/commands/<slug>-<phase>.md`
   // so the Claude Code slash commands work without an extra manual step.
@@ -355,21 +367,43 @@ function readEpicRootFrom(root: string): string {
  */
 function writeBuiltinClaudeCommands(
   root: string,
-  workflow: { id: string; pipelineId: string },
+  workflow: BuiltinWorkflow,
   preset: WorkspacePreset,
   epicRoot: string,
   overwrite: boolean,
 ): void {
   const commandsDir = path.join(root, '.claude', 'commands');
   fs.mkdirSync(commandsDir, { recursive: true });
-  const slug = workflowSlug(workflow as Parameters<typeof workflowSlug>[0]);
-  for (const phase of PHASES) {
-    const nsId = `${slug}-${phase.id}`;
+  for (const phase of workflow.phases) {
+    const nsId = phase.id;
     const commandFile = path.join(commandsDir, `${nsId}.md`);
     if (fs.existsSync(commandFile) && !overwrite) { continue; }
     const skillBody = preset.skillContents[nsId] ?? `# ${phase.name}\n\n${phase.description}\n`;
     fs.writeFileSync(commandFile, builtinClaudeCommand(phase, skillBody, epicRoot), 'utf8');
   }
+}
+
+/**
+ * Append a `tech_stack: [...]` line to workspace.yaml when detection found
+ * something and the file doesn't already declare one. Cheap line-append
+ * (no YAML re-parse) so we don't fight whatever style the user prefers.
+ */
+function ensureTechStackInYaml(root: string): void {
+  const yamlPath = path.join(root, 'workspace.yaml');
+  if (!fs.existsSync(yamlPath)) { return; }
+  let body: string;
+  try { body = fs.readFileSync(yamlPath, 'utf8'); } catch { return; }
+  if (/^[\t ]*tech_stack:/m.test(body)) { return; }
+  const detected = detectTechStack(root);
+  if (detected.length === 0) { return; }
+  const trailing = body.endsWith('\n') ? '' : '\n';
+  const comment =
+    '# tech_stack drives template filtering for built-in workflows. Edit\n' +
+    '# this list (web | mobile | desktop | backend | cli) and re-apply the\n' +
+    '# preset to refresh ~/.claude/skills/aidlc-*.md with only the sections\n' +
+    '# that match your project.\n';
+  const line = `tech_stack: [${detected.join(', ')}]\n`;
+  fs.writeFileSync(yamlPath, body + trailing + comment + line, 'utf8');
 }
 
 function presetDetailLine(p: WorkspacePreset): string {

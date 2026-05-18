@@ -66,6 +66,12 @@
         "category": "AIDLC"
       },
       {
+        "command": "aidlc.openGettingStarted",
+        "title": "Open Getting Started Guide",
+        "icon": "$(book)",
+        "category": "AIDLC"
+      },
+      {
         "command": "aidlc.addSkill",
         "title": "Add Skill (template / paste / upload / blank)",
         "icon": "$(file-code)",

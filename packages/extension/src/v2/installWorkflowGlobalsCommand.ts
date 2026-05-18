@@ -17,6 +17,7 @@ import {
   installWorkflowGlobalsByIds,
   isWorkflowGloballyInstalled,
 } from './globalDefaultsInstaller';
+import { resolveTechStackForRoot } from './techStackResolver';
 import { WorkspaceWebview } from './workspaceWebview';
 
 export async function installWorkflowGlobalsCommand(
@@ -60,8 +61,12 @@ export async function installWorkflowGlobalsCommand(
     return;
   }
 
-  const reports = installWorkflowGlobalsByIds(extensionPath, toInstall, (m) =>
-    output.appendLine(m),
+  const techStack = resolveTechStackForRoot();
+  const reports = installWorkflowGlobalsByIds(
+    extensionPath,
+    toInstall,
+    (m) => output.appendLine(m),
+    techStack,
   );
   const totalWritten = reports.reduce((acc, r) => acc + r.written.length, 0);
   const totalSkipped = reports.reduce((acc, r) => acc + r.skipped.length, 0);

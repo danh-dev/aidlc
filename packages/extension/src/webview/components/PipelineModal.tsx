@@ -14,6 +14,10 @@ export interface PipelineDraft {
 
 export interface PipelineStepDraft {
   agent: string;
+  /** Phase id / slash command name — displayed as the step's primary label. */
+  name?: string;
+  /** Skills scoped to this step. Subset of the agent's `skills:` array. */
+  skills?: string[];
   human_review: boolean;
   auto_review: boolean;
   auto_review_runner?: string;
@@ -78,12 +82,17 @@ export function PipelineModal({
     onSubmit({
       id: trimmedId,
       on_failure: onFailure,
-      steps: steps.map((s) => ({
-        agent: s.agent,
-        human_review: s.human_review,
-        auto_review: s.auto_review,
-        auto_review_runner: s.auto_review ? (s.auto_review_runner ?? '').trim() : undefined,
-      })),
+      steps: steps.map((s) => {
+        const name = (s.name ?? '').trim();
+        return {
+          agent: s.agent,
+          name: name || undefined,
+          skills: s.skills && s.skills.length > 0 ? s.skills : undefined,
+          human_review: s.human_review,
+          auto_review: s.auto_review,
+          auto_review_runner: s.auto_review ? (s.auto_review_runner ?? '').trim() : undefined,
+        };
+      }),
     });
     onClose();
   };
@@ -185,6 +194,7 @@ export function PipelineModal({
                   step={s}
                   idx={i}
                   total={steps.length}
+                  agents={agents}
                   onRemove={() => removeAt(i)}
                   onMoveUp={() => moveUp(i)}
                   onMoveDown={() => moveDown(i)}
@@ -281,6 +291,7 @@ function StepRow({
   step,
   idx,
   total,
+  agents,
   onRemove,
   onMoveUp,
   onMoveDown,
@@ -289,20 +300,54 @@ function StepRow({
   step: PipelineStepDraft;
   idx: number;
   total: number;
+  agents: AgentSummary[];
   onRemove: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onChange: (patch: Partial<PipelineStepDraft>) => void;
 }) {
+  // Resolve the agent record so we can surface its model / skill alongside
+  // the picker. Falling back to a stub avoids a flicker if the agent was
+  // just renamed/deleted in another modal.
+  const agentRecord = agents.find((a) => a.id === step.agent);
+  const agentSkillIds = agentRecord?.skills ?? (agentRecord?.skill ? [agentRecord.skill] : []);
+  const pickedSkills = step.skills ?? [];
+  const toggleSkill = (skillId: string) => {
+    const next = pickedSkills.includes(skillId)
+      ? pickedSkills.filter((s) => s !== skillId)
+      : [...pickedSkills, skillId];
+    onChange({ skills: next });
+  };
+
   return (
     <div className="rounded-md border border-border bg-secondary/30 p-2">
       <div className="flex items-center gap-2">
         <span className="grid h-5 w-5 shrink-0 place-items-center rounded bg-primary/15 font-mono text-[10px] font-bold text-primary">
           {idx + 1}
         </span>
-        <span className="flex-1 truncate font-mono text-[12px] font-semibold text-foreground">
-          {step.agent}
-        </span>
+        <input
+          type="text"
+          value={step.name ?? ''}
+          onChange={(e) => onChange({ name: e.target.value })}
+          placeholder="step name (e.g. plan)"
+          spellCheck={false}
+          title="Step name — also used as the slash command (`/<name>`) and display label."
+          className="w-32 rounded-md border border-border bg-card px-2 py-1 font-mono text-[11.5px] font-semibold text-foreground placeholder:text-muted-foreground/70 focus:border-primary focus:outline-none"
+        />
+        <select
+          value={step.agent}
+          onChange={(e) => onChange({ agent: e.target.value, skills: [] })}
+          title="Which agent (persona) runs this step"
+          className="flex-1 truncate rounded-md border border-border bg-card px-2 py-1 font-mono text-[12px] text-foreground focus:border-primary focus:outline-none"
+        >
+          {agents.length === 0 && <option value={step.agent}>{step.agent}</option>}
+          {!agents.some((a) => a.id === step.agent) && (
+            <option value={step.agent}>{step.agent} (missing)</option>
+          )}
+          {agents.map((a) => (
+            <option key={a.id} value={a.id}>{a.id}</option>
+          ))}
+        </select>
         <CheckboxPill
           checked={step.human_review}
           onChange={(v) => onChange({ human_review: v })}
@@ -348,6 +393,69 @@ function StepRow({
           <X className="h-3 w-3" />
         </button>
       </div>
+      {/* Skill picker — multi-select scoped to whatever the agent can use.
+          Empty list means "agent has no declared skills"; the user can
+          still leave the row blank to inherit the agent's full set at
+          runtime. */}
+      {agentSkillIds.length > 0 && (
+        <div className="ml-7 mt-1.5">
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+            Skills <span className="font-normal normal-case tracking-normal text-muted-foreground/80">(pick which the step makes available)</span>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {agentSkillIds.map((s) => {
+              const checked = pickedSkills.includes(s);
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => toggleSkill(s)}
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10.5px] transition-colors',
+                    checked
+                      ? 'border-primary/60 bg-primary/15 text-primary'
+                      : 'border-border bg-transparent text-foreground hover:border-border/80 hover:bg-accent/40',
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'inline-grid h-2.5 w-2.5 place-items-center rounded-sm border',
+                      checked ? 'border-primary bg-primary' : 'border-muted-foreground/40',
+                    )}
+                  >
+                    {checked && <span className="h-1 w-1 rounded-[1px] bg-primary-foreground" />}
+                  </span>
+                  {s}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {/* Model / capability summary so the user sees what the
+          selected agent actually does without having to leave the modal. */}
+      {agentRecord && (agentRecord.model || (agentRecord.integrations && agentRecord.integrations.length > 0) || agentRecord.description) && (
+        <div className="ml-7 mt-1.5 space-y-1">
+          {agentRecord.description && (
+            <div className="text-[10.5px] text-muted-foreground">{agentRecord.description}</div>
+          )}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {agentRecord.model && (
+              <span className="inline-flex items-center rounded bg-secondary px-1.5 py-0.5 font-mono text-[9.5px] text-secondary-foreground">
+                {agentRecord.model}
+              </span>
+            )}
+            {agentRecord.integrations?.map((c) => (
+              <span
+                key={c}
+                className="inline-flex items-center rounded bg-accent px-1.5 py-0.5 text-[9.5px] text-accent-foreground"
+              >
+                {c}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
       {step.auto_review && (
         <div className="ml-7 mt-1.5">
           <input

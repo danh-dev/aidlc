@@ -32,6 +32,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { BUILTIN_WORKFLOWS, type BuiltinWorkflow } from './builtinPresets';
+import { renderTemplate } from './templateRenderer';
 
 const MARKER_PREFIX = '<!-- AIDLC extension built-in';
 
@@ -59,8 +60,12 @@ export const DEFAULT_GLOBAL_WORKFLOW_IDS: readonly string[] = ['sdlc-pipeline'];
  * makes it a no-op when nothing changed. Non-default workflows install on
  * demand via `installWorkflowGlobalsById`.
  */
-export function installGlobalDefaults(extensionPath: string, log?: (msg: string) => void): InstallReport[] {
-  return installWorkflowGlobalsByIds(extensionPath, DEFAULT_GLOBAL_WORKFLOW_IDS, log);
+export function installGlobalDefaults(
+  extensionPath: string,
+  log?: (msg: string) => void,
+  techStack?: readonly string[] | null,
+): InstallReport[] {
+  return installWorkflowGlobalsByIds(extensionPath, DEFAULT_GLOBAL_WORKFLOW_IDS, log, techStack);
 }
 
 /**
@@ -68,17 +73,23 @@ export function installGlobalDefaults(extensionPath: string, log?: (msg: string)
  * silently. Used by `aidlc.installWorkflowGlobals` and by the apply-preset
  * confirmation flow that asks the user before dropping a workflow's files
  * into global.
+ *
+ * `techStack` filters skill / agent bodies through the template renderer so
+ * users only see sections that match their project. Pass `null` (or omit)
+ * to write the full generic template — the right call when no workspace
+ * is open or detection couldn't make up its mind.
  */
 export function installWorkflowGlobalsByIds(
   extensionPath: string,
   workflowIds: readonly string[],
   log?: (msg: string) => void,
+  techStack: readonly string[] | null = null,
 ): InstallReport[] {
   const reports: InstallReport[] = [];
   for (const id of workflowIds) {
     const workflow = BUILTIN_WORKFLOWS.find((w) => w.id === id);
     if (!workflow) { continue; }
-    reports.push(installWorkflow(extensionPath, workflow, log));
+    reports.push(installWorkflow(extensionPath, workflow, log, techStack));
   }
   return reports;
 }
@@ -86,16 +97,15 @@ export function installWorkflowGlobalsByIds(
 /**
  * Check whether a workflow's bundled agents + skills are present under
  * `~/.claude/`. Returns `true` only when *every* expected source file has
- * a matching `aidlc-<workflow>-<id>.md` installed — partial installs (e.g.
- * the user deleted one file) count as not installed so the apply-preset
- * prompt re-offers the install.
+ * a matching `aidlc-<id>.md` installed. Files are named by source filename,
+ * not by workflow, so multiple workflows sharing the same templates folder
+ * naturally see the same install state.
  */
 export function isWorkflowGloballyInstalled(extensionPath: string, workflowId: string): boolean {
   const workflow = BUILTIN_WORKFLOWS.find((w) => w.id === workflowId);
   if (!workflow) { return false; }
   const home = os.homedir();
   const workflowDir = path.join(extensionPath, 'templates', workflow.templatesDir);
-  const workflowIdLocal = workflow.id;
   return (
     kindInstalled('agents', path.join(home, '.claude', 'agents')) &&
     kindInstalled('skills', path.join(home, '.claude', 'skills'))
@@ -107,7 +117,7 @@ export function isWorkflowGloballyInstalled(extensionPath: string, workflowId: s
     for (const file of fs.readdirSync(srcDir)) {
       if (!file.endsWith('.md')) { continue; }
       const id = file.slice(0, -3);
-      const targetName = `aidlc-${workflowIdLocal}-${id}.md`;
+      const targetName = `aidlc-${id}.md`;
       if (!fs.existsSync(path.join(destDir, targetName))) { return false; }
     }
     return true;
@@ -118,6 +128,7 @@ function installWorkflow(
   extensionPath: string,
   workflow: BuiltinWorkflow,
   log?: (msg: string) => void,
+  techStack: readonly string[] | null = null,
 ): InstallReport {
   const report: InstallReport = { workflow: workflow.id, written: [], skipped: [] };
   const home = os.homedir();
@@ -127,8 +138,9 @@ function installWorkflow(
   copyKind('skills', path.join(home, '.claude', 'skills'));
 
   if (log && (report.written.length || report.skipped.length)) {
+    const stackTag = techStack && techStack.length ? ` [stack: ${techStack.join(',')}]` : '';
     log(
-      `globalDefaults[${workflow.id}]: wrote ${report.written.length}, skipped ${report.skipped.length}`,
+      `globalDefaults[${workflow.id}]${stackTag}: wrote ${report.written.length}, skipped ${report.skipped.length}`,
     );
   }
   return report;
@@ -141,9 +153,12 @@ function installWorkflow(
     for (const file of fs.readdirSync(srcDir)) {
       if (!file.endsWith('.md')) { continue; }
       const id = file.slice(0, -3);
-      const targetName = `aidlc-${workflow.id}-${id}.md`;
+      const targetName = `aidlc-${id}.md`;
       const targetPath = path.join(destDir, targetName);
-      const sourceBody = fs.readFileSync(path.join(srcDir, file), 'utf8');
+      const rawSource = fs.readFileSync(path.join(srcDir, file), 'utf8');
+      // Render `{{#if STACK}}…{{/if}}` blocks before stamping so the marker
+      // line stays at the very top regardless of which blocks got stripped.
+      const sourceBody = renderTemplate(rawSource, techStack ?? null);
       const stamped = stampMarker(sourceBody, workflow.id, kind === 'agents' ? 'agent' : 'skill', id);
 
       if (!fs.existsSync(targetPath)) {
@@ -192,22 +207,58 @@ interface UninstallReport {
 
 /**
  * Remove a workflow's bundled files from `~/.claude/agents` and
- * `~/.claude/skills`. Only deletes files that still carry the AIDLC marker
- * — anything the user replaced or hand-edited (marker overwritten) is
- * preserved. Missing files are silently ignored so re-running is safe.
+ * `~/.claude/skills`.
+ *
+ * Overlap-aware via `preserveWorkflowIds`: the caller passes the set of
+ * other workflows whose files MUST be kept. Files needed by any preserved
+ * workflow are skipped, even if the marker check would otherwise let us
+ * delete them. The AIDLC marker check still applies — hand-edited files
+ * (no marker) are never touched.
+ *
+ * Missing files are silently ignored so re-running is safe.
  */
 export function uninstallWorkflowGlobalsByIds(
   workflowIds: readonly string[],
   log?: (msg: string) => void,
+  extensionPath?: string,
+  preserveWorkflowIds?: readonly string[],
 ): UninstallReport[] {
   const reports: UninstallReport[] = [];
   const home = os.homedir();
+
+  // Files needed by workflows that should be preserved. Caller drives the
+  // set: pass workflows that remain applied in workspace.yaml. Falls back
+  // to "any globally-installed workflow other than the to-remove set" if
+  // the caller didn't specify — keeps prior call sites working.
+  const removeSet = new Set(workflowIds);
+  const preserveSet = new Set<string>();
+  if (extensionPath) {
+    const preserveIds = preserveWorkflowIds !== undefined
+      ? preserveWorkflowIds
+      : BUILTIN_WORKFLOWS
+          .filter((w) => !removeSet.has(w.id) && isWorkflowGloballyInstalled(extensionPath, w.id))
+          .map((w) => w.id);
+    for (const id of preserveIds) {
+      const other = BUILTIN_WORKFLOWS.find((w) => w.id === id);
+      if (!other) { continue; }
+      for (const file of expectedSourceFiles(extensionPath, other)) {
+        preserveSet.add(file);
+      }
+    }
+  }
+
   for (const id of workflowIds) {
     const workflow = BUILTIN_WORKFLOWS.find((w) => w.id === id);
     if (!workflow) { continue; }
     const report: UninstallReport = { workflow: workflow.id, removed: [], skipped: [] };
-    removeKind(path.join(home, '.claude', 'agents'));
-    removeKind(path.join(home, '.claude', 'skills'));
+
+    const filesToCheck = extensionPath
+      ? expectedSourceFiles(extensionPath, workflow)
+      : null;
+
+    removeKind(path.join(home, '.claude', 'agents'), 'agents');
+    removeKind(path.join(home, '.claude', 'skills'), 'skills');
+
     if (log && (report.removed.length || report.skipped.length)) {
       log(
         `globalDefaults[${workflow.id}]: removed ${report.removed.length}, skipped ${report.skipped.length}`,
@@ -215,11 +266,16 @@ export function uninstallWorkflowGlobalsByIds(
     }
     reports.push(report);
 
-    function removeKind(destDir: string): void {
+    function removeKind(destDir: string, kind: 'agents' | 'skills'): void {
       if (!fs.existsSync(destDir)) { return; }
-      const prefix = `aidlc-${workflow!.id}-`;
       for (const file of fs.readdirSync(destDir)) {
-        if (!file.startsWith(prefix) || !file.endsWith('.md')) { continue; }
+        if (!file.startsWith('aidlc-') || !file.endsWith('.md')) { continue; }
+        // When we know which files this workflow owns (extensionPath given),
+        // skip foreign ones so we don't blindly nuke unrelated AIDLC files.
+        if (filesToCheck && !filesToCheck.has(`${kind}/${file}`)) { continue; }
+        // Preserve files still needed by another installed workflow.
+        if (preserveSet.has(`${kind}/${file}`)) { report.skipped.push(file); continue; }
+
         const fullPath = path.join(destDir, file);
         const firstLine = readFirstLine(fullPath);
         if (firstLine.startsWith(MARKER_PREFIX)) {
@@ -232,6 +288,26 @@ export function uninstallWorkflowGlobalsByIds(
     }
   }
   return reports;
+}
+
+/**
+ * Compute the canonical set of installed file names for a workflow's
+ * source folder, keyed as `<kind>/aidlc-<id>.md`. Used to drive
+ * overlap-aware uninstall and to feed the preserve set.
+ */
+function expectedSourceFiles(extensionPath: string, workflow: BuiltinWorkflow): Set<string> {
+  const result = new Set<string>();
+  const workflowDir = path.join(extensionPath, 'templates', workflow.templatesDir);
+  for (const kind of ['agents', 'skills'] as const) {
+    const srcDir = path.join(workflowDir, kind);
+    if (!fs.existsSync(srcDir)) { continue; }
+    for (const file of fs.readdirSync(srcDir)) {
+      if (!file.endsWith('.md')) { continue; }
+      const id = file.slice(0, -3);
+      result.add(`${kind}/aidlc-${id}.md`);
+    }
+  }
+  return result;
 }
 
 /**
