@@ -266,7 +266,7 @@ function ruleSessionFragmentation(records: CallRecord[]): Suggestion[] {
     if (!sess) { sess = new Map(); buckets.set(key, sess); }
     sess.set(r.sessionId, (sess.get(r.sessionId) ?? 0) + 1);
     const p = modelPrice(r.model);
-    const cost = r.usage.cache_creation_input_tokens * p.cw / 1_000_000;
+    const cost = r.usage.cache_creation_input_tokens * p.cw_5m / 1_000_000;
     cwCost.set(key, (cwCost.get(key) ?? 0) + cost);
   }
   const out: Suggestion[] = [];
@@ -308,7 +308,7 @@ function ruleCacheRebuild(records: CallRecord[]): Suggestion[] {
     const excessCw = cw - cr * 0.05;
     if (excessCw <= 0) { continue; }
     const totalCostCw = recs.reduce(
-      (s, r) => s + r.usage.cache_creation_input_tokens * modelPrice(r.model).cw / 1_000_000,
+      (s, r) => s + r.usage.cache_creation_input_tokens * modelPrice(r.model).cw_5m / 1_000_000,
       0,
     );
     const rate = totalCostCw / Math.max(1, cw);

@@ -415,11 +415,22 @@ async function processJsonl(
       const inp = Number(u.input_tokens) || 0;
       const out = Number(u.output_tokens) || 0;
       const cr = Number(u.cache_read_input_tokens) || 0;
-      const cw = Number(u.cache_creation_input_tokens) || 0;
+      const rawCreation = u.cache_creation as
+        { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number } | undefined;
+      let cw_5m: number;
+      let cw_1h: number;
+      if (rawCreation && (rawCreation.ephemeral_5m_input_tokens !== undefined || rawCreation.ephemeral_1h_input_tokens !== undefined)) {
+        cw_5m = Number(rawCreation.ephemeral_5m_input_tokens) || 0;
+        cw_1h = Number(rawCreation.ephemeral_1h_input_tokens) || 0;
+      } else {
+        cw_5m = Number(u.cache_creation_input_tokens) || 0;
+        cw_1h = 0;
+      }
+      const cw = cw_5m + cw_1h;
       const model = (msg.model as string) || '';
       const p = modelPrice(model);
       const cost = inp * p.in / 1e6 + out * p.out / 1e6
-                 + cr * p.cr / 1e6 + cw * p.cw / 1e6;
+                 + cr * p.cr / 1e6 + cw_5m * p.cw_5m / 1e6 + cw_1h * p.cw_1h / 1e6;
 
       // Attribute to every run-step whose window contains this timestamp.
       // Steps without a valid startedAt have a zero-length window and are

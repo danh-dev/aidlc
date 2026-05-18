@@ -165,11 +165,16 @@ async function processFile(
       info.readPaths.push(...readPaths);
 
       if (info.base === null && msg.usage) {
+        const rawCreation = msg.usage.cache_creation;
+        const cwTotal = rawCreation
+          ? (Number(rawCreation.ephemeral_5m_input_tokens) || 0) + (Number(rawCreation.ephemeral_1h_input_tokens) || 0)
+          : Number(msg.usage.cache_creation_input_tokens) || 0;
         const usage: Usage = {
           input_tokens: Number(msg.usage.input_tokens) || 0,
           output_tokens: Number(msg.usage.output_tokens) || 0,
           cache_read_input_tokens: Number(msg.usage.cache_read_input_tokens) || 0,
-          cache_creation_input_tokens: Number(msg.usage.cache_creation_input_tokens) || 0,
+          cache_creation_input_tokens: cwTotal,
+          cache_creation: rawCreation,
         };
         const model: string = msg.model ?? 'unknown';
         info.base = {
@@ -203,6 +208,10 @@ interface RawEntry {
       output_tokens?: number;
       cache_read_input_tokens?: number;
       cache_creation_input_tokens?: number;
+      cache_creation?: {
+        ephemeral_5m_input_tokens?: number;
+        ephemeral_1h_input_tokens?: number;
+      };
     };
     content?: unknown;
   };

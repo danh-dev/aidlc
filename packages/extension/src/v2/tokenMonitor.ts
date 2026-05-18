@@ -151,11 +151,17 @@ async function processFile(
       const ts = entry.timestamp ? Date.parse(entry.timestamp) : NaN;
       if (!Number.isFinite(ts)) continue;
 
+      const rawCreation = (msg.usage as Record<string, unknown>).cache_creation as
+        { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number } | undefined;
+      const cwTotal = rawCreation
+        ? (Number(rawCreation.ephemeral_5m_input_tokens) || 0) + (Number(rawCreation.ephemeral_1h_input_tokens) || 0)
+        : Number(msg.usage.cache_creation_input_tokens) || 0;
       const usage: Usage = {
         input_tokens: Number(msg.usage.input_tokens) || 0,
         output_tokens: Number(msg.usage.output_tokens) || 0,
         cache_read_input_tokens: Number(msg.usage.cache_read_input_tokens) || 0,
-        cache_creation_input_tokens: Number(msg.usage.cache_creation_input_tokens) || 0,
+        cache_creation_input_tokens: cwTotal,
+        cache_creation: rawCreation,
       };
       const model = msg.model || 'unknown';
       const cost = calcCost(usage, model);
