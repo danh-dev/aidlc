@@ -135,4 +135,41 @@ export type {
   StepHistoryEntry,
 } from './runs/RunState';
 
+// ── Built-in workflow presets (shared by extension + CLI) ──────────
+export {
+  BUILTIN_WORKFLOWS,
+  PHASES,
+  pipelineCommandId,
+  builtinTemplatesRoot,
+  workflowSlug,
+  getBuiltinWorkflow,
+  getBuiltinWorkflowByPipelineId,
+  getBuiltinPipelineSummary,
+  getSdlcBuiltinPipelineSummary,
+  getAllBuiltinPipelineSummaries,
+  getBuiltinRecipeSummaries,
+  loadBuiltinPreset,
+  loadAllBuiltinPresets,
+  builtinClaudeCommand,
+  sdlcClaudeCommand,
+  phaseArtifactFileName,
+  getBuiltinArtifactTemplates,
+  getSdlcArtifactTemplates,
+  writeBuiltinAutoReviewValidators,
+  BUILTIN_PRESET_IDS,
+  isBuiltinPreset,
+} from './presets/builtinWorkflows';
+export type { BuiltinWorkflow, WorkspacePreset as BuiltinWorkspacePreset } from './presets/builtinWorkflows';
+
+// Global ~/.claude install of built-in agent/skill files (shared by ext + CLI).
+export {
+  installGlobalDefaults,
+  installWorkflowGlobalsByIds,
+  isWorkflowGloballyInstalled,
+  uninstallWorkflowGlobalsByIds,
+  detectGlobalBuiltinSource,
+  DEFAULT_GLOBAL_WORKFLOW_IDS,
+} from './presets/globalDefaults';
+export { renderTemplate } from './presets/templateRenderer';
+
 export const AIDLC_CORE_VERSION = '0.1.0';

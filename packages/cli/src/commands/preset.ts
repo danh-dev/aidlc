@@ -2,7 +2,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { WORKSPACE_DIR } from '@aidlc/core';
+import {
+  WORKSPACE_DIR,
+  BUILTIN_WORKFLOWS,
+  loadBuiltinPreset,
+  builtinTemplatesRoot,
+  installWorkflowGlobalsByIds,
+} from '@aidlc/core';
 import { readYaml, requireYaml, writeYaml, YamlDocument } from '../yamlIO';
 import { resolveWorkspaceRoot } from '../workspaceRoot';
 import { SKILL_TEMPLATES } from '../skillTemplates';
@@ -63,50 +69,39 @@ const BUILTIN_PRESETS: BuiltinPreset[] = [
   },
   {
     id: 'sdlc',
-    description: 'Full SDLC pipeline: Plan → Design → Test Plan → Implement → Review → Execute Test → Release → Monitor → Doc Sync',
-    apply(root, doc) {
-      const phases: Array<{ id: string; name: string; skills: string[]; model: string; artifact: string | null }> = [
-        { id: 'planner',       name: 'Planner',          skills: ['hello-world'],   model: 'claude-opus-4-7',    artifact: 'PRD.md' },
-        { id: 'designer',      name: 'Tech Lead',         skills: ['hello-world'],   model: 'claude-opus-4-7',    artifact: 'TECH-DESIGN.md' },
-        { id: 'test-planner',  name: 'QA Engineer',       skills: ['hello-world'],   model: 'claude-sonnet-4-5',  artifact: 'TEST-PLAN.md' },
-        { id: 'developer',     name: 'Developer',         skills: ['hello-world'],   model: 'claude-sonnet-4-5',  artifact: null },
-        { id: 'auto-reviewer', name: 'Auto Reviewer',     skills: ['code-reviewer'], model: 'claude-opus-4-7',    artifact: 'APPROVAL.md' },
-        { id: 'qa-executor',   name: 'QA Executor',       skills: ['hello-world'],   model: 'claude-sonnet-4-5',  artifact: 'TEST-SCRIPT.md' },
-        { id: 'release-mgr',   name: 'Release Manager',   skills: ['release-notes'], model: 'claude-sonnet-4-5',  artifact: 'RELEASE-NOTES.md' },
-        { id: 'sre',           name: 'SRE',               skills: ['hello-world'],   model: 'claude-sonnet-4-5',  artifact: null },
-        { id: 'archivist',     name: 'Archivist',         skills: ['hello-world'],   model: 'claude-sonnet-4-5',  artifact: 'DOC-SYNC.md' },
-      ];
-
-      // Ensure all .md files exist on disk BEFORE modifying doc — if a write
-      // fails we want to abort before workspace.yaml is touched.
-      ensureSkillFile(root, 'hello-world');
-      ensureSkillFile(root, 'code-reviewer');
-      ensureSkillFile(root, 'release-notes');
-
-      addIfMissing(doc.skills, { id: 'hello-world',   path: `./${WORKSPACE_DIR}/skills/hello-world.md` });
-      addIfMissing(doc.skills, { id: 'code-reviewer', path: `./${WORKSPACE_DIR}/skills/code-reviewer.md` });
-      addIfMissing(doc.skills, { id: 'release-notes', path: `./${WORKSPACE_DIR}/skills/release-notes.md` });
-
-      for (const p of phases) {
-        const agent: Record<string, unknown> = {
-          id: p.id, name: p.name, skills: p.skills, model: p.model,
-        };
-        if (p.artifact) { agent.artifact = p.artifact; }
-        addIfMissing(doc.agents, agent);
+    description: 'AIDLC SDLC pipeline (parallel): Plan → (Design ∥ Test Plan) → Implement (+unit-test) ∥ Generate Test Cases → Execute Test (+report)',
+    apply(_root, doc) {
+      // Shared with the extension: build the workspace shape (agents, skills,
+      // slash commands, pipeline) from the canonical built-in workflow in
+      // @aidlc/core. The shape is template-independent — only the composed
+      // skill *bodies* read template files, which the CLI doesn't write here
+      // (skills resolve to ~/.claude/skills/aidlc-*.md, installed by the
+      // extension or `aidlc` global install).
+      const workflow = BUILTIN_WORKFLOWS[0];
+      const templatesRoot = cliTemplatesRoot();
+      // Install the composed agent/skill markdown into ~/.claude so the
+      // workspace.yaml skill paths (~/.claude/skills/aidlc-*.md) resolve —
+      // same files the extension installs. Idempotent + marker-guarded.
+      installWorkflowGlobalsByIds(templatesRoot, [workflow.id]);
+      const preset = loadBuiltinPreset(templatesRoot, workflow);
+      const ws = preset.workspace as {
+        agents?: Array<Record<string, unknown>>;
+        skills?: Array<Record<string, unknown>>;
+        slash_commands?: Array<Record<string, unknown>>;
+        pipelines?: Array<Record<string, unknown>>;
+        recipes?: Array<Record<string, unknown>>;
+      };
+      for (const a of ws.agents ?? []) { addIfMissing(doc.agents, a); }
+      for (const s of ws.skills ?? []) { addIfMissing(doc.skills, s); }
+      for (const p of ws.pipelines ?? []) { addIfMissing(doc.pipelines, p); }
+      const cmds = doc.slash_commands;
+      for (const c of ws.slash_commands ?? []) {
+        if (!cmds.some((x) => x.name === c.name)) { cmds.push(c); }
       }
-
-      const steps = phases.map(p => ({
-        agent: p.id,
-        ...(p.artifact ? { produces: [`docs/epics/{epic}/${p.artifact}`] } : {}),
-        human_review: ['auto-reviewer', 'release-mgr'].includes(p.id),
-      }));
-
-      addIfMissing(doc.pipelines, {
-        id: 'sdlc-pipeline',
-        steps,
-        on_failure: 'stop',
-      });
-
+      // Recipes drive `aidlc epic start --brief` (auto-suggest): the classifier
+      // matches the brief to a recipe, then assembles a right-sized pipeline.
+      const docRecipes = (Array.isArray(doc.recipes) ? doc.recipes : (doc.recipes = [])) as Array<Record<string, unknown>>;
+      for (const r of ws.recipes ?? []) { addIfMissing(docRecipes, r); }
       return doc;
     },
   },
@@ -157,6 +152,20 @@ function ensureSkillFile(root: string, templateId: string): void {
 
 function addIfMissing(arr: Array<Record<string, unknown>>, item: Record<string, unknown>): void {
   if (!arr.some(x => x.id === item.id)) { arr.push(item); }
+}
+
+/**
+ * Locate the bundled `templates/` for built-in presets. In the published CLI
+ * the entry is an esbuild bundle (`dist/bundle.js`) with @aidlc/core inlined,
+ * so core's `builtinTemplatesRoot()` (which keys off its own `__dirname`)
+ * resolves to the CLI bundle dir, not core — the `bundle` script copies the
+ * templates to `dist/templates` for exactly this case. In a dev / `tsc` run
+ * core is a real node_modules dep, so its resolver works.
+ */
+function cliTemplatesRoot(): string {
+  const bundled = __dirname; // dist/ when running the esbuild bundle
+  if (fs.existsSync(path.join(bundled, 'templates', 'sdlc'))) { return bundled; }
+  return builtinTemplatesRoot();
 }
 
 // ── Command registration ──────────────────────────────────────────────────────
