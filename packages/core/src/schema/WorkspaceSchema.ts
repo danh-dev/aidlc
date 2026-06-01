@@ -168,6 +168,38 @@ const PipelineSchema = z.object({
   on_failure: z.enum(['stop', 'continue']).default('stop'),
 });
 
+// ── Recipes ────────────────────────────────────────────────────────
+
+/**
+ * A recipe is a named, ordered *subset* of an existing pipeline's steps,
+ * mapped to a task type (bugfix, small-feature, large-feature, …). It is
+ * the "auto-generate the right pipeline per task" primitive: pick a recipe,
+ * and {@link assemblePipeline} materializes a fresh pipeline by selecting
+ * the listed steps from the source pipeline and pruning their `depends_on`
+ * edges down to the selected set.
+ *
+ * Recipes carry NO agent/skill definitions of their own — `steps` are step
+ * *identifiers* (the step's `name`, falling back to its `agent` id, matching
+ * how the runner resolves `depends_on`). The agents + skills they reference
+ * must already exist in the workspace (seeded by a preset or hand-authored),
+ * which {@link collectWorkspaceRefIssues} verifies.
+ */
+const RecipeSchema = z.object({
+  id: z.string().min(1),
+  /** One-line summary shown in pickers / `aidlc pipeline recipes`. */
+  description: z.string().optional(),
+  /**
+   * Source pipeline id to draw steps from. Defaults to the workspace's first
+   * pipeline when omitted.
+   */
+  from: z.string().optional(),
+  /**
+   * Step identifiers to include, in execution order. Each must match a step
+   * in the source pipeline by its `name` (or `agent` id when unnamed).
+   */
+  steps: z.array(z.string().min(1)).min(1, 'Recipe must list at least one step'),
+});
+
 export type PipelineStepConfig = z.infer<typeof PipelineStepSchema>;
 
 /** Step in normalized form (object with all defaults applied). */
@@ -243,6 +275,120 @@ export function stepAgentId(step: unknown): string {
     return (step as { agent: string }).agent;
   }
   return '';
+}
+
+/**
+ * Identity a pipeline step is referenced by in `depends_on` and recipe
+ * `steps` lists: the step's `name`, falling back to its `agent` id. Matches
+ * exactly how the runner keys the DAG (PipelineRunner `dagId`), so multiple
+ * steps backed by the same agent stay distinct when they carry distinct
+ * `name`s.
+ */
+export function stepDagId(step: PipelineStepConfig): string {
+  const norm = normalizeStep(step);
+  return norm.name ?? norm.agent;
+}
+
+// ── Cross-reference validation ─────────────────────────────────────
+
+/** A dangling reference found by {@link collectWorkspaceRefIssues}. */
+export interface WorkspaceRefIssue {
+  /** Machine-readable category. */
+  code:
+    | 'unknown-agent'
+    | 'unknown-step-skill'
+    | 'unknown-agent-skill'
+    | 'unknown-recipe-source'
+    | 'unknown-recipe-step';
+  /** Human-readable, ready to print. */
+  message: string;
+  /** Dotted path into the workspace, e.g. `pipelines.sdlc-full.steps.design`. */
+  path: string;
+}
+
+/**
+ * Verify that every id-by-reference in the workspace resolves to a definition:
+ *
+ *   - each agent's `skills` exist in `skills:`
+ *   - each pipeline step's `agent` exists in `agents:`
+ *   - each pipeline step's per-step `skills` exist in `skills:`
+ *   - each recipe's `from` exists in `pipelines:` (when set)
+ *   - each recipe's `steps` exist in the source pipeline
+ *
+ * Returns the issue list (empty = clean). This is intentionally NOT folded
+ * into the Zod schema: hand-authored pipelines that predate a referenced
+ * agent should warn, not hard-fail at load. Callers decide severity —
+ * {@link assemblePipeline} treats issues touching its output as fatal, while
+ * the loader surfaces them as warnings.
+ */
+export function collectWorkspaceRefIssues(config: WorkspaceConfig): WorkspaceRefIssue[] {
+  const issues: WorkspaceRefIssue[] = [];
+  const agentIds = new Set(config.agents.map((a) => a.id));
+  const skillIds = new Set(config.skills.map((s) => s.id));
+
+  for (const agent of config.agents) {
+    for (const skill of agent.skills) {
+      if (!skillIds.has(skill)) {
+        issues.push({
+          code: 'unknown-agent-skill',
+          message: `Agent "${agent.id}" references skill "${skill}" which is not defined in skills:`,
+          path: `agents.${agent.id}.skills`,
+        });
+      }
+    }
+  }
+
+  for (const pipeline of config.pipelines) {
+    for (const step of pipeline.steps) {
+      const norm = normalizeStep(step);
+      const id = norm.name ?? norm.agent;
+      if (!agentIds.has(norm.agent)) {
+        issues.push({
+          code: 'unknown-agent',
+          message: `Pipeline "${pipeline.id}" step "${id}" references agent "${norm.agent}" which is not defined in agents:`,
+          path: `pipelines.${pipeline.id}.steps.${id}`,
+        });
+      }
+      for (const skill of norm.skills ?? []) {
+        if (!skillIds.has(skill)) {
+          issues.push({
+            code: 'unknown-step-skill',
+            message: `Pipeline "${pipeline.id}" step "${id}" references skill "${skill}" which is not defined in skills:`,
+            path: `pipelines.${pipeline.id}.steps.${id}.skills`,
+          });
+        }
+      }
+    }
+  }
+
+  const pipelinesById = new Map(config.pipelines.map((p) => [p.id, p]));
+  for (const recipe of config.recipes) {
+    const source = recipe.from
+      ? pipelinesById.get(recipe.from)
+      : config.pipelines[0];
+    if (!source) {
+      issues.push({
+        code: 'unknown-recipe-source',
+        message: recipe.from
+          ? `Recipe "${recipe.id}" draws from pipeline "${recipe.from}" which is not defined in pipelines:`
+          : `Recipe "${recipe.id}" has no source pipeline (workspace defines no pipelines:)`,
+        path: `recipes.${recipe.id}.from`,
+      });
+      continue;
+    }
+    const sourceStepIds = new Set(source.steps.map(stepDagId));
+    for (const stepId of recipe.steps) {
+      if (!sourceStepIds.has(stepId)) {
+        issues.push({
+          code: 'unknown-recipe-step',
+          message: `Recipe "${recipe.id}" references step "${stepId}" which is not in pipeline "${source.id}". Available: ${[...sourceStepIds].join(', ')}`,
+          path: `recipes.${recipe.id}.steps`,
+        });
+      }
+    }
+  }
+
+  return issues;
 }
 
 // ── Domain state (optional) ────────────────────────────────────────
@@ -322,6 +468,8 @@ export const WorkspaceSchema = z.object({
   environment: z.record(z.string(), z.string()).default({}),
   slash_commands: z.array(SlashCommandSchema).default([]),
   pipelines: z.array(PipelineSchema).default([]),
+  /** Task-type → pipeline recipes. See {@link RecipeSchema}. */
+  recipes: z.array(RecipeSchema).default([]),
 
   state: StateSchema.optional(),
   sidebar: SidebarSchema.optional(),
@@ -332,6 +480,7 @@ export type AgentConfig = z.infer<typeof AgentSchema>;
 export type SkillConfig = z.infer<typeof SkillSchema>;
 export type SlashCommandConfig = z.infer<typeof SlashCommandSchema>;
 export type PipelineConfig = z.infer<typeof PipelineSchema>;
+export type RecipeConfig = z.infer<typeof RecipeSchema>;
 export type StateConfig = z.infer<typeof StateSchema>;
 export type SidebarConfig = z.infer<typeof SidebarSchema>;
 export type SidebarView = z.infer<typeof SidebarViewSchema>;
