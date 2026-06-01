@@ -140,7 +140,10 @@ interface SyncedAgentPlan {
     description?: string;
     capabilities?: string[];
   };
-  skill: { id: string; path: string };
+  /** Skill entries to register for the agent. Built-in agents bring their
+   *  real preset skills (e.g. aidlc-prd, aidlc-implement); custom file-based
+   *  agents get a single synthesized `<id>-skill` pointing at their persona. */
+  skills: Array<{ id: string; path: string }>;
 }
 
 interface EpicStepDetailFull {
@@ -2156,6 +2159,50 @@ export class WorkspaceWebview {
    * inside its own `mutateYaml` block so the write is atomic with the
    * pipeline push.
    */
+  /**
+   * Map of every built-in workflow agent (aidlc-po, aidlc-qa, …) to its
+   * preset definition: the agent entry with its real `skills:` array plus the
+   * matching skill `{id, path}` entries. Used so auto-syncing a built-in agent
+   * into workspace.yaml writes its true skills (aidlc-prd, aidlc-implement, …)
+   * instead of a synthesized `<id>-skill`.
+   */
+  private builtinAgentDefinitions(): Map<string, { agent: SyncedAgentPlan['agent']; skills: Array<{ id: string; path: string }> }> {
+    const m = new Map<string, { agent: SyncedAgentPlan['agent']; skills: Array<{ id: string; path: string }> }>();
+    for (const wf of BUILTIN_WORKFLOWS) {
+      let preset;
+      try { preset = loadBuiltinPreset(this.extensionUri.fsPath, wf); } catch { continue; }
+      const ws = preset.workspace as {
+        agents?: Array<Record<string, unknown>>;
+        skills?: Array<Record<string, unknown>>;
+      };
+      const skillById = new Map<string, { id: string; path: string }>();
+      for (const s of ws.skills ?? []) {
+        const sid = String(s.id ?? '');
+        if (sid) { skillById.set(sid, { id: sid, path: String(s.path ?? '') }); }
+      }
+      for (const a of ws.agents ?? []) {
+        const aid = String(a.id ?? '');
+        if (!aid || m.has(aid)) { continue; }
+        const skillIds = Array.isArray(a.skills) ? (a.skills as unknown[]).map(String) : [];
+        const skills = skillIds
+          .map((sid) => skillById.get(sid))
+          .filter((x): x is { id: string; path: string } => Boolean(x));
+        m.set(aid, {
+          agent: {
+            id: aid,
+            name: typeof a.name === 'string' ? a.name : aid,
+            skills: skillIds,
+            model: typeof a.model === 'string' ? a.model : undefined,
+            description: typeof a.description === 'string' ? a.description : undefined,
+            capabilities: Array.isArray(a.capabilities) ? (a.capabilities as unknown[]).map(String) : undefined,
+          },
+          skills,
+        });
+      }
+    }
+    return m;
+  }
+
   private ensureWorkspaceAgentsForSteps(
     root: string,
     doc: YamlDocument,
@@ -2169,6 +2216,12 @@ export class WorkspaceWebview {
     const byId = new Map<string, DiscoveredAsset>();
     for (const a of discovered) { byId.set(a.id, a); }
 
+    // Built-in agent definitions keyed by agent id (aidlc-po, aidlc-qa, …).
+    // These carry the agent's REAL skills (aidlc-prd, aidlc-implement, …) +
+    // the matching skill entries, so syncing a built-in agent doesn't invent
+    // a bogus `<id>-skill`.
+    const builtinAgentDefs = this.builtinAgentDefinitions();
+
     const added: SyncedAgentPlan[] = [];
     const plannedIds = new Set<string>();
 
@@ -2177,26 +2230,33 @@ export class WorkspaceWebview {
       const id = String((raw as Record<string, unknown>).agent ?? '').trim();
       if (!id) { return { ok: false, missing: '' }; }
       if (existing.has(id) || plannedIds.has(id)) { continue; }
+
+      // Prefer the built-in definition (real skills) over the generic
+      // file-based synthesis.
+      const builtinDef = builtinAgentDefs.get(id);
+      if (builtinDef) {
+        added.push({ agent: builtinDef.agent, skills: builtinDef.skills });
+        plannedIds.add(id);
+        continue;
+      }
+
       const file = byId.get(id);
       if (!file) { return { ok: false, missing: id }; }
 
+      // Custom file-based agent: synthesize a single skill pointing at its
+      // persona file so the runner can load the prompt.
       const fm = parseAgentFrontmatter(file.filePath);
       const skillId = `${id}-skill`;
       added.push({
         agent: {
           id,
-          name: fm.description ? id : id,
+          name: id,
           skills: [skillId],
           model: fm.model,
           capabilities: fm.tools,
           description: fm.description,
         },
-        skill: {
-          id: skillId,
-          // Reference the persona file directly — the runner uses
-          // `skills:` paths to load the prompt at dispatch time.
-          path: this.relPathFor(root, file.filePath),
-        },
+        skills: [{ id: skillId, path: this.relPathFor(root, file.filePath) }],
       });
       plannedIds.add(id);
     }
@@ -2227,9 +2287,11 @@ export class WorkspaceWebview {
         doc.agents.push(agent);
         agentIds.add(plan.agent.id);
       }
-      if (!skillIds.has(plan.skill.id)) {
-        doc.skills.push({ id: plan.skill.id, path: plan.skill.path });
-        skillIds.add(plan.skill.id);
+      for (const sk of plan.skills) {
+        if (!skillIds.has(sk.id)) {
+          doc.skills.push({ id: sk.id, path: sk.path });
+          skillIds.add(sk.id);
+        }
       }
     }
   }
