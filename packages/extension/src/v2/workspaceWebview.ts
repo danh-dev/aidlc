@@ -111,6 +111,38 @@ const REQUIREMENT_FETCH_ACTION: Record<string, string> = {
     'Fetch the URL in the user message once and read its main content (the requirement / spec). Do not crawl other pages.',
 };
 
+/** Parse a GitHub issue/PR reference (`owner/repo#123` or a github.com URL). */
+function parseGithubRef(ref: string): { owner: string; repo: string; num: string; kind: 'issue' | 'pr' } | null {
+  const short = ref.trim().match(/^([\w.-]+)\/([\w.-]+)#(\d+)$/);
+  if (short) { return { owner: short[1], repo: short[2], num: short[3], kind: 'issue' }; }
+  const url = ref.match(/github\.com\/([\w.-]+)\/([\w.-]+)\/(issues|pull)\/(\d+)/);
+  if (url) { return { owner: url[1], repo: url[2], num: url[4], kind: url[3] === 'pull' ? 'pr' : 'issue' }; }
+  return null;
+}
+
+/**
+ * Fetch a GitHub issue/PR directly with the `gh` CLI (host-side, ~1s) instead
+ * of routing through the agentic `claude` loop — there's no GitHub claude.ai
+ * connector, so the agent would otherwise wander for a minute+. Requires `gh`
+ * on PATH + an authenticated login (the extension host inherits the user env).
+ */
+async function fetchGithubViaGh(ref: string): Promise<{ title: string; body: string; num: string }> {
+  const p = parseGithubRef(ref);
+  if (!p) {
+    throw new Error('Could not parse a GitHub `owner/repo#123` ref or issue/PR URL from the input.');
+  }
+  const extraPath = ['/opt/homebrew/bin', '/usr/local/bin', `${process.env.HOME ?? ''}/.local/bin`]
+    .filter(Boolean).join(':');
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${process.env.PATH ?? ''}:${extraPath}` };
+  const { stdout } = await execFileAsync(
+    'gh',
+    [p.kind === 'pr' ? 'pr' : 'issue', 'view', p.num, '--repo', `${p.owner}/${p.repo}`, '--json', 'title,body'],
+    { env, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
+  );
+  const j = JSON.parse(stdout) as { title?: string; body?: string };
+  return { title: String(j.title ?? ''), body: String(j.body ?? ''), num: p.num };
+}
+
 /**
  * Surface the useful part of a `claude` failure. In `--print` mode Claude
  * often writes the real error to stdout, so check both streams before falling
@@ -2335,6 +2367,29 @@ export class WorkspaceWebview {
     if (!root || !ref.trim()) { return; }
     const doc = readYaml(root);
     if (!doc) { return; }
+
+    // GitHub: fetch directly with `gh` (host-side, ~1s) — there's no GitHub
+    // connector, so the agentic path would wander for a minute+. Drop the raw
+    // body straight into the description; classification runs off it after.
+    if (source === 'github') {
+      void this.panel.webview.postMessage({ type: 'requirementLoadStart', source, ref });
+      try {
+        const gh = await fetchGithubViaGh(ref);
+        const summary = `${gh.title ? `${gh.title}\n\n` : ''}${gh.body}`.trim();
+        if (!summary) { throw new Error('That GitHub issue/PR has no body to load.'); }
+        void this.panel.webview.postMessage({ type: 'requirementChunk', source, ref, chunk: summary });
+        void this.panel.webview.postMessage({
+          type: 'requirementLoaded', source, ref, epicId: `GH-${gh.num}`, summary,
+        });
+      } catch (err) {
+        const e = err as { code?: unknown; message?: unknown };
+        const message = String(e?.code) === 'ENOENT'
+          ? 'GitHub CLI (`gh`) not found on PATH — install it (and run `gh auth login`), or paste the issue text instead.'
+          : describeExecError(err);
+        void this.panel.webview.postMessage({ type: 'requirementLoadError', source, ref, message });
+      }
+      return;
+    }
 
     // Fetch + summarize ONLY — recipe classification is decoupled (it runs
     // afterwards off the filled description), so the text shows up as soon as
