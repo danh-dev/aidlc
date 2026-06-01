@@ -2272,6 +2272,9 @@ export class WorkspaceWebview {
       const skillsArr = Array.isArray(r.skills)
         ? (r.skills as unknown[]).map(String).filter((s) => s.length > 0)
         : [];
+      const dependsOnArr = Array.isArray(r.depends_on)
+        ? (r.depends_on as unknown[]).map(String).filter((s) => s.length > 0)
+        : [];
       const human_review = r.human_review === true;
       const auto_review = r.auto_review === true;
       const runner = typeof r.auto_review_runner === 'string' ? r.auto_review_runner.trim() : '';
@@ -2291,6 +2294,8 @@ export class WorkspaceWebview {
       };
       if (stepName) { step.name = stepName; }
       if (skillsArr.length > 0) { step.skills = skillsArr; }
+      // Parallel structure defined via the modal's "Runs after" picker.
+      if (dependsOnArr.length > 0) { step.depends_on = dependsOnArr; }
       if (auto_review) { step.auto_review_runner = runner; }
       steps.push(step);
     }
