@@ -1005,6 +1005,12 @@ export class WorkspaceWebview {
       case 'openBuilder':
         this.setView('builder');
         return;
+      case 'openAddPipeline':
+        // Switch to the Builder and pop its inline Add-pipeline modal. Used by
+        // the Start-Epic modal's "Create new pipeline" button.
+        this.setView('builder');
+        void this.panel.webview.postMessage({ type: 'triggerAddPipeline' });
+        return;
       case 'openProject': {
         const picked = await vscode.window.showOpenDialog({
           canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
