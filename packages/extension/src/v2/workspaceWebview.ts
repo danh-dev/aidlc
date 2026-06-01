@@ -482,6 +482,7 @@ function toEpicSummaryUi(e: CoreEpicSummary): EpicSummaryUi {
     stepDetails: e.stepDetails.map((s) => ({
       agent: s.agent,
       stepName: s.name,
+      slashCommand: s.slashCommand,
       artifact: s.artifact,
       status: s.status,
       runStatus: s.runStatus,

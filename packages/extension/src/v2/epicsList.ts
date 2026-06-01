@@ -46,6 +46,9 @@ export interface EpicSummary {
     agent: string;
     /** Optional phase id / slash command name — set on built-in pipelines that split phase ↔ persona. */
     name?: string;
+    /** Resolved slash command for this step (`/implement` or
+     *  `/sdlc-parallel-full-implement`), matched against workspace.yaml. */
+    slashCommand?: string;
     /** Basename of the first `produces:` path — surfaced as the step's
      *  artifact label on the Epic detail panel. */
     artifact?: string;
@@ -196,6 +199,26 @@ export function listEpics(workspaceRoot: string, doc: YamlDocument | null): Epic
       });
     }
 
+    // Resolve each step's slash command from workspace.yaml `slash_commands`
+    // (the source of truth) rather than reconstructing it — pipelines may use
+    // bare (`/implement`) or pipeline-namespaced (`/sdlc-parallel-full-implement`)
+    // command names, and only the table knows which was actually installed.
+    const slashNames = new Set(
+      Array.isArray(doc?.slash_commands)
+        ? (doc!.slash_commands as Array<{ name?: unknown }>).map((c) => String(c.name ?? ''))
+        : [],
+    );
+    const slashForStep = (stepName: string | undefined): string | undefined => {
+      if (!stepName) { return undefined; }
+      const namespaced = pipelineId ? `/${pipelineId}-${stepName}` : '';
+      if (namespaced && slashNames.has(namespaced)) { return namespaced; }
+      const bare = `/${stepName}`;
+      if (slashNames.has(bare)) { return bare; }
+      // Prefer namespaced as the default when the pipeline id is known and the
+      // table has neither (fresh build before re-apply); else fall back to bare.
+      return namespaced || bare;
+    };
+
     const stepDetails = stepStatesRaw.map((s, i) => {
       const agent = typeof s.agent === 'string' ? s.agent : '';
       const gate = stepGateByIdx.get(i) ?? { auto: false, human: false };
@@ -224,6 +247,7 @@ export function listEpics(workspaceRoot: string, doc: YamlDocument | null): Epic
       return {
         agent,
         name: stepNameByIdx.get(i),
+        slashCommand: slashForStep(stepNameByIdx.get(i)),
         artifact: stepArtifactByIdx.get(i),
         status: displayStatus,
         startedAt: typeof s.startedAt === 'string' ? s.startedAt : null,
