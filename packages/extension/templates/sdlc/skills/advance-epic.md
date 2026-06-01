@@ -1,6 +1,6 @@
 ---
 name: advance-epic
-description: Full-auto orchestrated run of the SDLC pipeline for an epic. The Orchestrator agent dispatches workers, runs auto-review, and stops at the 4 human gates (plan, design, test-plan, implement) for human approval.
+description: Full-auto orchestrated run of the SDLC pipeline for an epic. The Orchestrator agent dispatches workers and stops at the human gates for approval. Runs plan → design ∥ test-plan → implement ∥ generate-test-cases → execute-test.
 argument-hint: <{{EPIC_PREFIX}}-XXXX> [--skip-gates]
 ---
 
@@ -13,15 +13,14 @@ You are about to run the **full-auto orchestrator** for epic `$0`.
 The Orchestrator agent (loaded from `.claude/agents/orchestrator.md`) runs this loop until it hits a stopping condition:
 
 ```
-next_step → dispatch worker → auto-review → pass? ─┬─ gate phase → pause for human
-                                                   └─ else → advance
-                                  └─ reject? → retry (≤2) or cascade upstream
+next_step → dispatch worker → done? ─┬─ gate phase → pause for human approve/reject
+                                     └─ else → advance to next step
 ```
 
 Stopping conditions:
-- ✅ `completed` — all phases passed
-- 🔔 `paused_at_gate` — waiting for human approve/reject (plan, design, test-plan, implement)
-- ⛔ `halted` — auto-reviewer exhausted retries, human must intervene
+- ✅ `completed` — all phases through execute-test passed
+- 🔔 `paused_at_gate` — waiting for human approve/reject at a human gate
+- ⛔ `halted` — a worker couldn't finish after a retry, human must intervene
 
 ## Prerequisites
 
@@ -69,7 +68,7 @@ Just re-invoke step 3 — the orchestrator picks up from wherever `next_step` po
 
 ## If the user passes `--skip-gates`
 
-Set `skip_gates: true` in the dispatch prompt. The orchestrator will not pause at human gates; it will run every phase through auto-review only. Use this for hotfixes, not normal epics.
+Set `skip_gates: true` in the dispatch prompt. The orchestrator will not pause at human gates; it advances every phase straight through to execute-test. Use this for hotfixes, not normal epics.
 
 ## Anti-patterns (do not do in this skill)
 

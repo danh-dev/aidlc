@@ -374,7 +374,7 @@ function SkillCard({ skill, allSkillIds }: { skill: SkillSummary; allSkillIds: s
   );
 }
 
-const DEFAULT_PIPELINE_ID = 'sdlc-full';
+const DEFAULT_PIPELINE_ID = 'sdlc-parallel-full';
 
 interface PersistedBuilderUi {
   workflowDomain?: string;
