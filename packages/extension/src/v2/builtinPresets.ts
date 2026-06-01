@@ -96,7 +96,7 @@ const PHASES_SEQUENTIAL: PhaseDef[] = [
     inputs: 'Tech design, test plan, project coding rules',
     outputs: 'Code + unit tests on feature branch, PR opened',
     artifact: 'feature/<EPIC>-<slug>',
-    humanReview: true, autoReview: true, autoReviewRunner: '.aidlc/scripts/ci.sh',
+    humanReview: true, autoReview: true, autoReviewRunner: '.aidlc/validators/ci.mjs',
     // Developer needs full file access + GitHub for PR / commit operations.
     capabilities: ['files', 'github'],
   },
@@ -314,7 +314,11 @@ function artifactPathFor(phase: PhaseDef): string | null {
   // slash, space, or angle brackets is descriptive prose ("v<X.Y.Z> tag",
   // "feature/<EPIC>-<slug>") and we skip it.
   if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9]+$/.test(artifact)) { return null; }
-  return `docs/epics/{epic}/${artifact}`;
+  // Must match the prompt convention in `builtinClaudeCommand`, which tells
+  // the agent to write under `<epicRoot>/<epic>/artifacts/<file>`. Validating
+  // the bare `docs/epics/{epic}/<file>` path would never find the file the
+  // agent actually wrote, breaking "Mark step done" (see issue #26).
+  return `docs/epics/{epic}/artifacts/${artifact}`;
 }
 
 /**
@@ -633,6 +637,65 @@ export function getBuiltinArtifactTemplates(extensionPath: string, workflow: Bui
 /** Back-compat — read SDLC artifact templates specifically. */
 export function getSdlcArtifactTemplates(extensionPath: string): Record<string, string> {
   return getBuiltinArtifactTemplates(extensionPath, BUILTIN_WORKFLOWS[0]);
+}
+
+/**
+ * Generic auto-review runner used when a workflow ships no bundled validator.
+ * Matches the AutoReviewer contract (default-exported function returning a
+ * verdict). Kept minimal — passes with a note so the pipeline isn't blocked.
+ */
+const DEFAULT_AUTO_REVIEW_VALIDATOR = `/**
+ * Auto-review runner. AIDLC loads this via dynamic import after the step's
+ * \`produces\` validate and calls the default export. Return
+ * { decision: 'pass' | 'reject', reason }. Replace with real checks; set
+ * \`auto_review: false\` on the step to skip auto-review entirely.
+ */
+export default async function ci(_ctx) {
+  return { decision: 'pass', reason: 'Default validator — replace with real CI checks.' };
+}
+`;
+
+/**
+ * Scaffold the auto-review runner module(s) a built-in workflow references.
+ *
+ * Phases with `auto_review: true` point `auto_review_runner` at a JS module
+ * (e.g. `.aidlc/validators/ci.mjs`) that the core AutoReviewer loads via
+ * dynamic `import()` — see packages/core/src/runs/AutoReviewer.ts. The module
+ * MUST export a default function; a shell script can't be imported, which is
+ * why the runner is `.mjs`, not `.sh` (issue #27).
+ *
+ * For each distinct project-relative runner path, copies the bundled template
+ * (`templates/<dir>/validators/<file>`, falling back to sdlc) when present,
+ * else writes a generic passing validator. Never overwrites an existing file,
+ * so a user's customized validator survives re-apply.
+ */
+export function writeBuiltinAutoReviewValidators(
+  extensionPath: string,
+  root: string,
+  workflow: BuiltinWorkflow,
+): void {
+  const seen = new Set<string>();
+  for (const phase of workflow.phases) {
+    if (!phase.autoReview || !phase.autoReviewRunner) { continue; }
+    const rel = phase.autoReviewRunner;
+    // Only scaffold project-relative runner paths we own; leave absolute or
+    // out-of-tree paths to the user.
+    if (path.isAbsolute(rel) || rel.startsWith('..')) { continue; }
+    if (seen.has(rel)) { continue; }
+    seen.add(rel);
+
+    const dest = path.join(root, rel);
+    if (fs.existsSync(dest)) { continue; }
+
+    const base = path.basename(rel);
+    const workflowTpl = path.join(extensionPath, 'templates', workflow.templatesDir, 'validators', base);
+    const fallbackTpl = path.join(extensionPath, 'templates', 'sdlc', 'validators', base);
+    const tpl = fs.existsSync(workflowTpl) ? workflowTpl : fs.existsSync(fallbackTpl) ? fallbackTpl : null;
+    const content = tpl ? fs.readFileSync(tpl, 'utf8') : DEFAULT_AUTO_REVIEW_VALIDATOR;
+
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, content, 'utf8');
+  }
 }
 
 /**

@@ -39,6 +39,7 @@ import {
   getBuiltinArtifactTemplates,
   getBuiltinWorkflowByPipelineId,
   builtinClaudeCommand,
+  writeBuiltinAutoReviewValidators,
   BUILTIN_WORKFLOWS,
 } from './builtinPresets';
 import { uninstallWorkflowGlobalsByIds } from './globalDefaultsInstaller';
@@ -1882,21 +1883,13 @@ export class WorkspaceWebview {
       }
     }
 
-    // Write the CI runner script for the implement step's auto-review if
-    // missing. Each workflow can ship its own `templates/<dir>/scripts/ci.sh`
-    // (e.g. iOS uses xcodebuild, .NET uses dotnet test); falls back to the
-    // generic SDLC script when the workflow hasn't customized it.
-    const ciScriptDest = path.join(root, WORKSPACE_DIR, 'scripts', 'ci.sh');
-    if (!fs.existsSync(ciScriptDest)) {
-      const workflowCi = path.join(this.extensionUri.fsPath, 'templates', builtin.templatesDir, 'scripts', 'ci.sh');
-      const fallbackCi = path.join(this.extensionUri.fsPath, 'templates', 'sdlc', 'scripts', 'ci.sh');
-      const ciScriptSrc = fs.existsSync(workflowCi) ? workflowCi : fallbackCi;
-      if (fs.existsSync(ciScriptSrc)) {
-        fs.mkdirSync(path.dirname(ciScriptDest), { recursive: true });
-        fs.copyFileSync(ciScriptSrc, ciScriptDest);
-        try { fs.chmodSync(ciScriptDest, 0o755); } catch { /* non-fatal on Windows */ }
-      }
-    }
+    // Scaffold the JS auto-review runner(s) for the implement step's
+    // auto-review if missing. The core AutoReviewer loads these via dynamic
+    // import and expects a default-exported function — a shell script can't be
+    // imported, so the runner is a `.mjs` module, not `.sh` (issue #27). Each
+    // workflow can ship its own `templates/<dir>/validators/ci.mjs`; falls back
+    // to the generic SDLC validator when not customized.
+    writeBuiltinAutoReviewValidators(this.extensionUri.fsPath, root, builtin);
 
     // Drop bundled artifact templates for this workflow so the epic's
     // artifacts/ folder gets a structured starting point on the very first run.
