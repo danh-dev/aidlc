@@ -221,6 +221,11 @@ export function StartEpicModal({
         clearLoad();
         setLoadSource(null);
         setLoadRef('');
+        // Safety / back-compat: if streamed chunks didn't fill the field (a
+        // non-streaming host, or chunks dropped), drop the summary in now so
+        // the description never ends up empty after a successful load.
+        const summary = String(m.summary ?? '');
+        if (summary) { setDescription((d) => (d.trim() ? d : summary)); }
         const loadedEpicId = String(m.epicId ?? '');
         if (loadedEpicId && ID_PATTERN.test(loadedEpicId)) {
           setEpicId((cur) => (cur.trim() ? cur : loadedEpicId));

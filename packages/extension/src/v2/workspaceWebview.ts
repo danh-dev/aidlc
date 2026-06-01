@@ -3574,8 +3574,15 @@ export class WorkspaceWebview {
     const initialTheme = themeManager.current;
 
     const assetsRoot = vscode.Uri.joinPath(this.extensionUri, 'out', 'webviews');
-    const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(assetsRoot, 'styles.css')).toString();
-    const entryUri = webview.asWebviewUri(vscode.Uri.joinPath(assetsRoot, 'workspace.js')).toString();
+    // Cache-bust by the bundle's mtime: the webview otherwise serves a stale
+    // cached workspace.js after a rebuild (same URI → old JS keeps running).
+    const bust = (p: string): string => {
+      try { return `?v=${Math.floor(fs.statSync(p).mtimeMs).toString(36)}`; } catch { return ''; }
+    };
+    const cssPath = vscode.Uri.joinPath(assetsRoot, 'styles.css');
+    const entryPath = vscode.Uri.joinPath(assetsRoot, 'workspace.js');
+    const cssUri = webview.asWebviewUri(cssPath).toString() + bust(cssPath.fsPath);
+    const entryUri = webview.asWebviewUri(entryPath).toString() + bust(entryPath.fsPath);
 
     return `<!DOCTYPE html>
 <html lang="en">
