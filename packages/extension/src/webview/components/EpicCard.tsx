@@ -201,14 +201,12 @@ export function EpicCard({ epic, agentMeta, slashCommandsByAgent }: Props) {
               focused={focused}
               meta={agentMeta[focused.agent]}
               slashCommand={
-                // Built-in pipelines split phase ↔ persona: the slash
-                // command name matches the step's phase id (e.g.
-                // `/plan`), not the persona agent (`/aidlc-po`). Fall
-                // back to the workspace.yaml slash_commands table when
-                // the step doesn't carry a name (legacy / user-defined).
-                focused.stepName
-                  ? `/${focused.stepName}`
-                  : slashCommandsByAgent[focused.agent]
+                // Use the host-resolved command (matched against the actual
+                // workspace.yaml slash_commands — bare `/implement` or
+                // namespaced `/sdlc-parallel-full-implement`), so it always
+                // points at a command file that exists. Fall back to the
+                // by-agent table for steps without a name.
+                focused.slashCommand ?? slashCommandsByAgent[focused.agent]
               }
             />
           )}

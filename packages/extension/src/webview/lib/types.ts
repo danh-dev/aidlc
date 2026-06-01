@@ -314,6 +314,9 @@ export interface EpicStepDetailFull {
   /** Phase id / slash command name (e.g. `plan`, `test-plan`) when the
    *  pipeline step carries a separate `name:` distinct from `agent:`. */
   stepName?: string;
+  /** Resolved slash command for this step (`/implement` or
+   *  `/sdlc-parallel-full-implement`), from workspace.yaml slash_commands. */
+  slashCommand?: string;
   /** Basename of the step's first `produces:` path — the file the user
    *  expects to see written by this step (e.g. `PRD.md`). Falls back to
    *  the agent meta artifact when the step doesn't declare one. */
