@@ -39,6 +39,7 @@ import {
   getBuiltinArtifactTemplates,
   getBuiltinWorkflowByPipelineId,
   builtinClaudeCommand,
+  writeBuiltinAutoReviewValidators,
   BUILTIN_WORKFLOWS,
 } from './builtinPresets';
 import { uninstallWorkflowGlobalsByIds } from './globalDefaultsInstaller';
@@ -850,6 +851,16 @@ export class WorkspaceWebview {
   }
 
   /**
+   * Open the Builder panel and select one of its internal tabs
+   * (workflows / agents / skills / epics). Used by the sidebar stat tiles
+   * so a count doubles as a deep link into the matching tab.
+   */
+  static openBuilderTab(extensionUri: vscode.Uri, tab: string): void {
+    WorkspaceWebview.show(extensionUri, 'builder');
+    void WorkspaceWebview.current?.panel.webview.postMessage({ type: 'setBuilderTab', tab });
+  }
+
+  /**
    * Re-build + push state to the open Builder panel, if any. Used by
    * install/uninstall workflow-globals commands so the Domain dropdown
    * reflects the new set of installed workflows without a manual reload.
@@ -1270,8 +1281,16 @@ export class WorkspaceWebview {
           typeof msg.newId === 'string' ? msg.newId : undefined,
         );
         return;
+      case 'renamePipeline':
+        await this.renameItem(
+          'pipelines',
+          String(msg.id ?? ''),
+          typeof msg.newId === 'string' ? msg.newId : undefined,
+        );
+        return;
       case 'duplicateAgent': await this.duplicateItem('agents', String(msg.id ?? '')); return;
       case 'duplicateSkill': await this.duplicateItem('skills', String(msg.id ?? '')); return;
+      case 'duplicatePipeline': await this.duplicateItem('pipelines', String(msg.id ?? '')); return;
       case 'togglePipelineFailure':
         await this.togglePipelineFailure(String(msg.pipelineId ?? ''));
         return;
@@ -1882,21 +1901,13 @@ export class WorkspaceWebview {
       }
     }
 
-    // Write the CI runner script for the implement step's auto-review if
-    // missing. Each workflow can ship its own `templates/<dir>/scripts/ci.sh`
-    // (e.g. iOS uses xcodebuild, .NET uses dotnet test); falls back to the
-    // generic SDLC script when the workflow hasn't customized it.
-    const ciScriptDest = path.join(root, WORKSPACE_DIR, 'scripts', 'ci.sh');
-    if (!fs.existsSync(ciScriptDest)) {
-      const workflowCi = path.join(this.extensionUri.fsPath, 'templates', builtin.templatesDir, 'scripts', 'ci.sh');
-      const fallbackCi = path.join(this.extensionUri.fsPath, 'templates', 'sdlc', 'scripts', 'ci.sh');
-      const ciScriptSrc = fs.existsSync(workflowCi) ? workflowCi : fallbackCi;
-      if (fs.existsSync(ciScriptSrc)) {
-        fs.mkdirSync(path.dirname(ciScriptDest), { recursive: true });
-        fs.copyFileSync(ciScriptSrc, ciScriptDest);
-        try { fs.chmodSync(ciScriptDest, 0o755); } catch { /* non-fatal on Windows */ }
-      }
-    }
+    // Scaffold the JS auto-review runner(s) for the implement step's
+    // auto-review if missing. The core AutoReviewer loads these via dynamic
+    // import and expects a default-exported function — a shell script can't be
+    // imported, so the runner is a `.mjs` module, not `.sh` (issue #27). Each
+    // workflow can ship its own `templates/<dir>/validators/ci.mjs`; falls back
+    // to the generic SDLC validator when not customized.
+    writeBuiltinAutoReviewValidators(this.extensionUri.fsPath, root, builtin);
 
     // Drop bundled artifact templates for this workflow so the epic's
     // artifacts/ folder gets a structured starting point on the very first run.
@@ -2831,7 +2842,7 @@ export class WorkspaceWebview {
   }
 
   private async renameItem(
-    field: 'agents' | 'skills',
+    field: 'agents' | 'skills' | 'pipelines',
     id: string,
     /** Webview already prompted via inline RenameModal — use this directly
      * and skip the VS Code input box. Falsy for command-palette flows. */
@@ -2855,10 +2866,18 @@ export class WorkspaceWebview {
       if (!item) { return false; }
       if (arr.some((x) => x.id === trimmed)) { return false; }
       item.id = trimmed;
+      // Renaming a pipeline must carry its live references along — slash
+      // commands point at the pipeline by id, so leaving them stale would
+      // silently break `/start-epic`-style entry points.
+      if (field === 'pipelines' && Array.isArray(doc.slash_commands)) {
+        for (const cmd of doc.slash_commands as Array<{ pipeline?: unknown }>) {
+          if (cmd.pipeline === id) { cmd.pipeline = trimmed; }
+        }
+      }
     });
   }
 
-  private async duplicateItem(field: 'agents' | 'skills', id: string): Promise<void> {
+  private async duplicateItem(field: 'agents' | 'skills' | 'pipelines', id: string): Promise<void> {
     if (!id) { return; }
     this.mutateYaml((doc) => {
       const arr = doc[field];

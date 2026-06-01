@@ -103,7 +103,11 @@ export async function runAutoReview(args: {
     mod = (await import(url)) as typeof mod;
   } catch (err) {
     throw new AutoReviewerError(
-      `Failed to load auto_review_runner "${norm.auto_review_runner}": ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to load auto_review_runner "${norm.auto_review_runner}": ` +
+        `${err instanceof Error ? err.message : String(err)}\n` +
+        `Expected a JS/TS module at "${scriptPath}" with a default-exported function ` +
+        `returning { decision, reason }. Create it, point auto_review_runner at an ` +
+        `existing module, or set auto_review: false on this step to skip auto-review.`,
       err,
     );
   }

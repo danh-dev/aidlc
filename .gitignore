@@ -25,3 +25,4 @@ packages/*/bin/
 packages/extension/scripts/demo/out/
 packages/extension/scripts/demo/out-agents/
 .ast-graph/
+.claude/settings.json

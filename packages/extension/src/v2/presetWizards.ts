@@ -23,6 +23,7 @@ import {
   isBuiltinPreset,
   getBuiltinWorkflow,
   builtinClaudeCommand,
+  writeBuiltinAutoReviewValidators,
   type BuiltinWorkflow,
 } from './builtinPresets';
 import {
@@ -246,6 +247,10 @@ export async function applyPresetCommand(
   if (builtin) {
     const epicRoot = readEpicRootFrom(root);
     writeBuiltinClaudeCommands(root, builtin, preset, epicRoot, false);
+    // Scaffold the JS auto-review runner(s) the workflow references so
+    // auto-review can load them — otherwise "Mark step done" crashes with a
+    // missing-module error (issue #27).
+    writeBuiltinAutoReviewValidators(extensionPath, root, builtin);
   }
 
   if (mergeReport && !mergeReport.changed) {
