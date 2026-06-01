@@ -99,8 +99,12 @@ const REQUIREMENT_FETCH_ACTION: Record<string, string> = {
     'As soon as you have the summary, STOP and answer — if the description is empty or null, answer immediately ' +
     'using only the summary. Do not look for more context.',
   github:
-    'Make ONE GitHub tool call to read only the issue or pull request named in the user message ' +
-    '(owner/repo#123 or a URL) — its title and body. Do not enumerate other issues.',
+    'Fetch the GitHub issue or pull request named in the user message (a `owner/repo#123` ref ' +
+    'or a github.com URL) using the GitHub CLI via the Bash tool — NOT a web fetch, NOT an MCP tool. ' +
+    'Parse the owner, repo and number from the ref, then run exactly one command: ' +
+    '`gh issue view <number> --repo <owner>/<repo> --json title,body` ' +
+    '(use `gh pr view` instead when the URL path contains /pull/). ' +
+    'If that command errors, output NO_CONTENT. Do not browse the web, do not enumerate other issues.',
   drive:
     'Make ONE Google Drive tool call to read only the document named in the user message (a Drive URL or file id).',
   url:
