@@ -573,6 +573,7 @@ function buildState(initialView: WorkspaceView): WorkspaceState {
   const recipes: RecipeSummary[] = (Array.isArray(doc.recipes) ? doc.recipes : [])
     .map((r) => buildRecipeSummary(r as Partial<RecipeConfig>, doc.pipelines as PipelineConfig[]))
     .filter((r): r is RecipeSummary => r !== null);
+  rlog(`[state] ${folder.name}: recipes=${recipes.length} (raw=${Array.isArray(doc.recipes) ? doc.recipes.length : 0}), pipelines=${pipelines.length}`);
 
   const epicRoot = readEpicRoot(doc);
   const epicIds = listEpicIdsFromDir(root, epicRoot);
