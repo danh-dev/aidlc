@@ -1,5 +1,5 @@
 ---
-name: unit-test
+name: aidlc-unit-test
 description: Write and run unit tests for the implemented feature on its branch — cover the acceptance criteria and the test plan's unit-test cases. Stack-neutral (adapts to the project's test framework).
 argument-hint: "<{{EPIC_PREFIX}}-XXXX>"
 ---
