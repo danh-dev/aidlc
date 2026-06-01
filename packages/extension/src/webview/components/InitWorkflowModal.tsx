@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Sparkles, FileText, GitBranch } from 'lucide-react';
+import { Sparkles, FileText } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Modal, ModalFooter, ModalCancelButton, ModalConfirmButton } from './Modal';
 
@@ -15,28 +15,16 @@ interface Option {
 const OPTIONS: Option[] = [
   {
     workflowId: 'sdlc-parallel-pipeline',
-    title: 'SDLC Parallel Pipeline',
+    title: 'SDLC Pipeline',
     badge: 'Recommended',
     description:
-      'Engineering + QA tracks run concurrently. Best for team flows where Test Plan and Test Cases parallel Tech Design and Implement.',
+      'Engineering + QA tracks run concurrently and meet at execute-test. PO / Tech Lead / Developer / QA.',
     bullets: [
-      'plan → design ∥ test-plan → implement ∥ generate-test-cases → execute-test → release → doc-sync',
-      '8 steps, DAG shape (multiple in flight at once)',
-      'Shares agents/skills with the sequential workflow',
+      'plan → (design → implement+unit-test) ∥ (test-plan → generate-test-cases) → execute-test+report',
+      '6 steps, DAG shape (multiple in flight at once)',
+      'Ends at execute-test — no release / monitor / doc-sync',
     ],
     icon: <Sparkles className="h-4 w-4" />,
-  },
-  {
-    workflowId: 'sdlc-pipeline',
-    title: 'SDLC Pipeline',
-    description:
-      'Classic linear SDLC — one step at a time. Simpler to follow; good for solo flows or small epics.',
-    bullets: [
-      'plan → design → test-plan → implement → review → execute-test → release → monitor → doc-sync',
-      '9 steps, strictly sequential',
-      'Familiar shape, no parallelism to reason about',
-    ],
-    icon: <GitBranch className="h-4 w-4" />,
   },
   {
     workflowId: null,

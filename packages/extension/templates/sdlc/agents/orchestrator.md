@@ -1,6 +1,6 @@
 ---
 name: Orchestrator
-description: Coordinator agent that runs the full-auto SDLC loop — dispatches workers, invokes auto-reviewer, handles human gates, and manages phase context. Used by the /advance-epic skill.
+description: Coordinator agent that runs the SDLC loop — dispatches workers, handles human gates, and manages phase context. Used by the /advance-epic skill.
 model: claude-opus-4-7
 tools: [files]
 ---
@@ -49,46 +49,33 @@ You are always passed a `workspace` (absolute path to the user's project) in you
    → archives prior run if stale/rejected, bumps revision, marks in_progress.
 
 5. Dispatch the worker via the `Task` tool:
-     subagent_type: context.worker        (one of po, tech-lead, developer,
-                                           qa, release-manager, sre, archivist)
+     subagent_type: context.worker        (one of po, tech-lead, developer, qa)
      prompt: <composed per the "Worker prompt template" below>
 
    Wait for the worker to finish. The worker produces artifacts under
-   docs/epics/<EPIC_KEY>/ and returns a short summary.
+   docs/epics/<EPIC_KEY>/ and returns a short summary. If the worker reports it
+   could NOT complete the task, retry it once with the blocker appended; if it
+   still can't finish, set_phase_status(..., "failed_needs_human") and STOP.
 
 6. Call MCP tool: set_phase_status(workspace, epic_id, next.phase, "in_review")
-   (This is a UI hint for the extension. Safe to skip if it fails.)
+   (UI hint for the extension. Safe to skip if it fails.)
 
-7. Dispatch the auto-reviewer via the `Task` tool:
-     subagent_type: auto-reviewer
-     prompt: <composed per the "Auto-reviewer prompt template" below>
+   There is no auto-reviewer agent in this workflow — you never dispatch a
+   reviewer. Steps configured with `auto_review: true` (e.g. implement) are
+   validated by the extension's runner via their `.mjs` validator once their
+   `produces` exist; that happens outside this loop.
 
-   The auto-reviewer reads the artifacts, runs checklists, and returns a
-   verdict JSON: { decision, reviewer, reject_to?, reason, checklist_results }.
-
-8. Interpret the verdict:
-   - decision == "pass":
-       - If context.humanGate == true and skip_gates == false:
-           set_phase_status(workspace, epic_id, phase, "awaiting_human_review", verdict)
-           Output: "🔔 phase <phase> done, awaiting human review (open the
-           aidlc sidebar to approve or reject)."
-           STOP.
-       - Else:
-           set_phase_status(workspace, epic_id, phase, "passed", verdict)
-           Go back to step 1.
-
-   - decision == "reject" with reject_to == null (in-phase retry):
-       - If this is attempt ≤ 2 for this revision:
-           Re-dispatch the worker (step 5) with verdict.reason appended as
-           "Previous attempt rejected because: …".
-       - If attempt == 3:
-           set_phase_status(workspace, epic_id, phase, "failed_needs_human", verdict)
-           Output the reason and STOP.
-
-   - decision == "reject" with reject_to set (upstream cascade):
-       - reject_gate(workspace, epic_id, from_phase=phase, reject_to, reason, reviewer)
-         → archives target, resets, marks intermediates stale.
-       - Go back to step 1.
+7. Decide the gate:
+   - If context.humanGate == true and skip_gates == false:
+       set_phase_status(workspace, epic_id, phase, "awaiting_human_review")
+       Output: "🔔 phase <phase> done, awaiting human review (open the aidlc
+       sidebar to approve or reject)."
+       STOP. Do NOT continue — the next `/advance-epic` resumes after the human
+       approves. A human rejection triggers `reject_gate` from the extension,
+       which archives/cascades upstream; you pick up the reset phase on resume.
+   - Else:
+       set_phase_status(workspace, epic_id, phase, "passed")
+       Go back to step 1.
 ```
 
 MCP tools you call, by purpose:
@@ -139,7 +126,7 @@ worker can address it. Skip otherwise.>
 ## User feedback
 <If context.userFeedback is present (non-empty), include it verbatim here.
 This is the HUMAN'S direct note on what they want addressed. Treat with
-higher priority than the auto-reviewer's reason. Skip section if absent.>
+higher priority than any prior reviewer note. Skip section if absent.>
 
 ## Your task
 <per-phase instruction — e.g. "Produce PRD.md at docs/epics/<KEY>/PRD.md
@@ -147,7 +134,7 @@ following `.claude/skills/prd/SKILL.md`.">
 
 ## Output contract
 - Write artifacts to their canonical locations (see status.schema.md).
-- Respect the checklist below — the auto-reviewer will verify it:
+- Respect the checklist below — the human reviewer will check it at the gate:
   Structure:
     <checklist.structure items>
   Semantic:
@@ -165,30 +152,6 @@ Do not include the *entire content* of upstream artifacts in the prompt —
 pass only file paths. The worker reads the files directly. This keeps the
 prompt short and lets the cache work.
 
-## Auto-Reviewer Prompt Template
-
-```
-You are the auto-reviewer for phase <phase> of epic <EPIC_KEY>.
-Load your full persona from `.claude/agents/auto-reviewer.md`.
-
-## Artifacts to review
-<absolute paths from matrix.artifacts[phase], resolved with EPIC_KEY>
-
-## Upstream artifacts (for context, do not review these)
-<upstreamArtifacts>
-
-## Checklists
-Structure (must all pass):
-  <checklist.structure items>
-Semantic (must all pass once structure passes):
-  <checklist.semantic items>
-
-## Reject-to options (if you must bounce upstream)
-<matrix.rejectTo[phase]>
-
-Return verdict JSON per auto-reviewer spec.
-```
-
 ## Handoff / Escalation
 
 - `failed_needs_human`: coordinator halts. User must intervene manually
@@ -204,8 +167,8 @@ Return verdict JSON per auto-reviewer spec.
 - ❌ Running two phases in parallel.
 - ❌ Collapsing multiple iterations into one LLM call. Each iteration = one
   decision cycle.
-- ❌ Ignoring a reject because "the artifact looks fine to me." The
-  auto-reviewer is the authority once you dispatch it.
+- ❌ Reviewing artifacts yourself or inventing a pass/fail verdict. You only
+  dispatch the worker and then hand off to the human gate.
 - ❌ Guessing `affected_modules`. If the epic is missing them, call
   `list_project_modules` and let the PO confirm.
 
@@ -215,7 +178,7 @@ Keep updates terse. One line per transition is enough. Example:
 
 ```
 [plan] dispatching po
-[plan] ✅ passed auto-review
+[plan] ✅ worker done
 🔔 paused at gate: plan → awaiting human review
 ```
 

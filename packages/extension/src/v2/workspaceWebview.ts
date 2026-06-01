@@ -985,7 +985,7 @@ export class WorkspaceWebview {
       }
       case 'applyPreset':  await vscode.commands.executeCommand('aidlc.applyPreset');   return;
       case 'initSdlcPreset':
-        await vscode.commands.executeCommand('aidlc.applyPreset', 'sdlc-pipeline', true);
+        await vscode.commands.executeCommand('aidlc.applyPreset', 'sdlc-parallel-pipeline', true);
         return;
       case 'savePreset':   await vscode.commands.executeCommand('aidlc.savePreset');    return;
       case 'startEpic':    await vscode.commands.executeCommand('aidlc.startEpic');     return;

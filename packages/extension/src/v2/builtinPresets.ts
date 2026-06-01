@@ -31,7 +31,16 @@ interface PhaseDef {
   id: string;
   name: string;
   persona: string;        // file under agents/
-  skillFile: string | null; // file under skills/, or null = use persona only
+  /**
+   * Skill source files under `skills/` that this step makes available, in
+   * order. The FIRST one is the primary instruction composed into the
+   * step's slash command; the rest are extra skills attached to the step +
+   * agent (e.g. `implement` carries [`implement`, `unit-test`]). Empty =
+   * persona-only (falls back to IMPLEMENT_FALLBACK_INSTRUCTIONS). Skill ids
+   * are derived from the filename (`aidlc-<file>`) so they match the
+   * on-disk files written by globalDefaultsInstaller.
+   */
+  skillFiles: string[];
   model: string;
   description: string;
   inputs: string;
@@ -55,136 +64,61 @@ interface PhaseDef {
 }
 
 /**
- * Sequential SDLC phases — one step at a time, classic linear flow.
+ * The single built-in SDLC pipeline — a parallel DAG that ends at
+ * execute-test. QA runs concurrently with engineering:
  *
- *     plan → design → test-plan → implement → unit-test → review → execute-test → release → monitor → doc-sync
+ *     plan → ┬─ design   ─→ implement (+unit-test) ─┐
+ *            │                                       ├─→ execute-test (+test-report)
+ *            └─ test-plan ─→ generate-test-cases   ─┘
+ *
+ * Each step's `skillFiles` lists the skills it makes available (first =
+ * primary instruction). `implement` carries both `implement` and `unit-test`;
+ * `execute-test` carries both `execute-test` and `test-report`.
  */
-const PHASES_SEQUENTIAL: PhaseDef[] = [
+const PHASES: PhaseDef[] = [
   {
-    id: 'plan', name: 'Plan', persona: 'po', skillFile: 'epic', model: 'claude-opus-4-7',
+    id: 'plan', name: 'Plan', persona: 'po', skillFiles: ['prd'], model: 'claude-opus-4-7',
     description: 'Scaffold the epic and write the PRD.',
     inputs: 'Jira ticket, business context, Figma designs',
     outputs: 'Epic doc + PRD with measurable acceptance criteria',
     artifact: 'PRD.md',
     humanReview: true, autoReview: false,
-    // PO needs to read tickets, designs, and existing product docs to write
-    // a complete PRD. Web for stakeholder research.
     capabilities: ['jira', 'figma', 'core-business', 'web'],
   },
   {
-    id: 'design', name: 'Design', persona: 'tech-lead', skillFile: 'tech-design', model: 'claude-opus-4-7',
+    id: 'design', name: 'Design', persona: 'tech-lead', skillFiles: ['tech-design'], model: 'claude-opus-4-7',
     description: 'Design the implementation approach.',
     inputs: 'PRD, existing code, dependency graph',
     outputs: 'Architecture, API contract, DI plan, file impact list',
     artifact: 'TECH-DESIGN.md',
     humanReview: true, autoReview: false,
-    // Tech Lead reads PRD + existing code + arch docs to design the approach.
     capabilities: ['files', 'github', 'core-business'],
+    dependsOn: ['plan'],
   },
   {
-    id: 'test-plan', name: 'Test Plan', persona: 'qa', skillFile: 'test-plan', model: 'claude-sonnet-4-6',
+    id: 'test-plan', name: 'Test Plan', persona: 'qa', skillFiles: ['test-plan'], model: 'claude-sonnet-4-6',
     description: 'Plan how the feature will be verified.',
     inputs: 'PRD acceptance criteria, tech design, ITS / device matrix',
     outputs: 'Test cases (UT / UI / integration / performance), device matrix',
     artifact: 'TEST-PLAN.md',
     humanReview: true, autoReview: false,
     capabilities: ['files', 'jira', 'core-business', 'its'],
+    dependsOn: ['plan'],
   },
   {
-    id: 'implement', name: 'Implement', persona: 'developer', skillFile: 'implement', model: 'claude-sonnet-4-6',
-    description: 'Build the feature on a feature branch.',
+    id: 'implement', name: 'Implement', persona: 'developer', skillFiles: ['implement', 'unit-test'], model: 'claude-sonnet-4-6',
+    description: 'Build the feature on a feature branch and write its unit tests.',
     inputs: 'Tech design, test plan, project coding rules',
-    outputs: 'Code on a feature branch, PR opened',
+    outputs: 'Code + unit tests on feature branch, PR opened',
     artifact: 'feature/<EPIC>-<slug>',
     humanReview: true, autoReview: true, autoReviewRunner: '.aidlc/validators/ci.mjs',
     // Developer needs full file access + GitHub for PR / commit operations.
     capabilities: ['files', 'github'],
+    dependsOn: ['design'],
   },
-  {
-    id: 'unit-test', name: 'Unit Test', persona: 'developer', skillFile: 'unit-test', model: 'claude-sonnet-4-6',
-    description: 'Write and run unit tests for the implemented feature.',
-    inputs: 'Feature branch code, test plan unit cases, project test conventions',
-    outputs: 'Unit tests on the feature branch + UNIT-TEST-SUMMARY.md',
-    artifact: 'UNIT-TEST-SUMMARY.md',
-    humanReview: false, autoReview: false,
-    // Same persona as Implement — Developer gets both `implement` and
-    // `unit-test` as its two aidlc skills.
-    capabilities: ['files', 'github'],
-  },
-  {
-    id: 'review', name: 'Review', persona: 'auto-reviewer', skillFile: 'review', model: 'claude-opus-4-7',
-    description: 'Review the diff against the PRD + tech design.',
-    inputs: 'Git diff, PRD, tech design, test plan',
-    outputs: 'AC validation table, architecture check, verdict (pass / reject)',
-    artifact: 'APPROVAL.md',
-    humanReview: true, autoReview: false,
-    capabilities: ['files', 'github'],
-  },
-  {
-    id: 'execute-test', name: 'Execute Test', persona: 'qa', skillFile: 'execute-test', model: 'claude-sonnet-4-6',
-    description: 'Run the test plan on the merged code.',
-    inputs: 'Merged code, test plan, UAT environment',
-    outputs: 'Test execution report, tester sign-off',
-    artifact: 'TEST-SCRIPT.md',
-    humanReview: true, autoReview: false,
-    capabilities: ['files', 'jira', 'its'],
-  },
-  {
-    id: 'release', name: 'Release', persona: 'release-manager', skillFile: 'release', model: 'claude-sonnet-4-6',
-    description: 'Cut the release.',
-    inputs: 'Git log since last tag, epic test execution status',
-    outputs: 'Release checklist, app store / changelog notes, version tag',
-    artifact: 'v<X.Y.Z> tag',
-    humanReview: true, autoReview: false,
-    // RM needs GitHub for cutting tags / release notes and Slack to
-    // announce the release.
-    capabilities: ['github', 'slack'],
-  },
-  {
-    id: 'monitor', name: 'Monitor', persona: 'sre', skillFile: 'monitor', model: 'claude-sonnet-4-6',
-    description: 'Watch production for regressions after release.',
-    inputs: 'App Store crashes, analytics events, support tickets',
-    outputs: 'Health report, KHI table, Go / Hotfix decision',
-    artifact: 'HEALTH-REPORT.md',
-    humanReview: true, autoReview: false,
-    // SRE pulls support tickets / alerts. Slack for paging, web for
-    // dashboard / external alerts.
-    capabilities: ['slack', 'web', 'jira'],
-  },
-  {
-    id: 'doc-sync', name: 'Doc Sync', persona: 'archivist', skillFile: 'doc-sync', model: 'claude-sonnet-4-6',
-    description: 'Reverse-sync docs to match what was actually built.',
-    inputs: 'PRD plan, tech design plan, actual git commits',
-    outputs: 'Updated core-business / architecture docs, reverse-sync checklist',
-    artifact: 'DOC-REVERSE-SYNC.md',
-    humanReview: true, autoReview: false,
-    capabilities: ['files', 'github', 'core-business'],
-  },
-];
-
-/**
- * Parallel SDLC phases — DAG shape so QA runs concurrently with engineering.
- *
- *     plan → ┬─ design   ─┬─ implement → unit-test  ─┐
- *            │            │                          ├─→ execute-test → release → doc-sync
- *            └─ test-plan ┴─ generate-test-cases   ─┘
- *
- * Task breakdown lives inside `design` (Tech Lead writes the tech design
- * + the engineering task list in one artifact) — no separate `planning`
- * phase. Phase ids that overlap with the sequential workflow (`plan`,
- * `design`, `test-plan`, `implement`, `unit-test`, `execute-test`,
- * `release`, `doc-sync`) share the same agent / skill / global file with
- * sequential. Only `generate-test-cases` is parallel-only.
- */
-const PHASES_PARALLEL: PhaseDef[] = [
-  PHASES_SEQUENTIAL[0], // plan
-  { ...PHASES_SEQUENTIAL[1], dependsOn: ['plan'] },     // design
-  { ...PHASES_SEQUENTIAL[2], dependsOn: ['plan'] },     // test-plan
-  { ...PHASES_SEQUENTIAL[3], dependsOn: ['design'] },   // implement
-  { ...PHASES_SEQUENTIAL[4], dependsOn: ['implement'] }, // unit-test
   {
     id: 'generate-test-cases', name: 'Generate Test Cases', persona: 'qa',
-    skillFile: 'generate-test-cases', model: 'claude-sonnet-4-6',
+    skillFiles: ['generate-test-cases'], model: 'claude-sonnet-4-6',
     description: 'Concrete, executable test cases derived from the test plan.',
     inputs: 'Test plan, acceptance criteria',
     outputs: 'Executable test cases (UI/IT scripts, fixtures, data) + TEST-CASES.md',
@@ -193,9 +127,16 @@ const PHASES_PARALLEL: PhaseDef[] = [
     capabilities: ['files', 'jira', 'its'],
     dependsOn: ['test-plan'],
   },
-  { ...PHASES_SEQUENTIAL[6], dependsOn: ['unit-test', 'generate-test-cases'] }, // execute-test
-  { ...PHASES_SEQUENTIAL[7], dependsOn: ['execute-test'] },                     // release
-  { ...PHASES_SEQUENTIAL[9], dependsOn: ['release'] },                          // doc-sync
+  {
+    id: 'execute-test', name: 'Execute Test', persona: 'qa', skillFiles: ['execute-test', 'test-report'], model: 'claude-sonnet-4-6',
+    description: 'Run the test cases and write the test report.',
+    inputs: 'Feature branch, test plan, test cases, UAT environment',
+    outputs: 'Test execution + TEST-REPORT with pass/fail, defects, go/no-go',
+    artifact: 'TEST-SCRIPT.md',
+    humanReview: true, autoReview: false,
+    capabilities: ['files', 'jira', 'its'],
+    dependsOn: ['implement', 'generate-test-cases'],
+  },
 ];
 
 /**
@@ -259,22 +200,13 @@ export interface BuiltinWorkflow {
 
 export const BUILTIN_WORKFLOWS: BuiltinWorkflow[] = [
   {
-    id: 'sdlc-pipeline',
-    pipelineId: 'sdlc-full',
+    id: 'sdlc-parallel-pipeline',
+    pipelineId: 'sdlc-parallel-full',
     name: 'SDLC Pipeline',
     templatesDir: 'sdlc',
     description:
-      'Sequential SDLC pipeline: Plan → Design → Test Plan → Implement → Review → Execute Test → Release → Monitor → Doc Sync. One step at a time, PO / Tech Lead / QA / Developer / RM / SRE / Archivist.',
-    phases: PHASES_SEQUENTIAL,
-  },
-  {
-    id: 'sdlc-parallel-pipeline',
-    pipelineId: 'sdlc-parallel-full',
-    name: 'SDLC Parallel Pipeline',
-    templatesDir: 'sdlc',
-    description:
-      'Parallel SDLC pipeline: Plan → Planning → (Design || Test Plan) → (Implement || Test Cases) → Execute Test → Release → Doc Sync. Shares agents / skills with the sequential workflow on overlapping phases. QA runs concurrently with engineering.',
-    phases: PHASES_PARALLEL,
+      'Parallel SDLC pipeline ending at execute-test: Plan → (Design → Implement+UnitTest) ∥ (Test Plan → Generate Test Cases) → Execute Test+Report. PO / Tech Lead / Developer / QA. QA runs concurrently with engineering.',
+    phases: PHASES,
   },
 ];
 
@@ -352,12 +284,14 @@ export function loadBuiltinPreset(extensionPath: string, workflow: BuiltinWorkfl
     const persona = fs.existsSync(personaPath)
       ? fs.readFileSync(personaPath, 'utf8')
       : `# ${phase.name}\n\n(persona file missing: agents/${phase.persona}.md)\n`;
+    // Primary skill file (first in the list) drives the composed command body.
+    const primarySkill = phase.skillFiles[0];
     let instruction: string;
-    if (phase.skillFile) {
-      const skillPath = path.join(skillsDir, `${phase.skillFile}.md`);
+    if (primarySkill) {
+      const skillPath = path.join(skillsDir, `${primarySkill}.md`);
       instruction = fs.existsSync(skillPath)
         ? fs.readFileSync(skillPath, 'utf8')
-        : `# /${phase.id}\n\n(skill file missing: skills/${phase.skillFile}.md)\n`;
+        : `# /${phase.id}\n\n(skill file missing: skills/${primarySkill}.md)\n`;
     } else {
       instruction =
         IMPLEMENT_FALLBACK_INSTRUCTIONS[workflow.id] ?? IMPLEMENT_FALLBACK_INSTRUCTIONS.default;
@@ -391,27 +325,30 @@ export function loadBuiltinPreset(extensionPath: string, workflow: BuiltinWorkfl
     phasesByPersona.set(phase.persona, list);
   }
 
-  // Skill IDs in workspace.yaml carry the `aidlc-` prefix so they match
-  // the on-disk filenames (`~/.claude/skills/aidlc-<phase>.md`) — this is
-  // also what the user sees on the per-step skill picker, so the displayed
-  // chips align with the actual global skill files (aidlc-test-plan,
-  // aidlc-execute-test, …) instead of bare phase ids that looked like
-  // unfamiliar custom names.
-  const skillIdOf = (p: PhaseDef): string => `aidlc-${p.id}`;
+  // Skill ids are derived from the skill *filename* (`aidlc-<file>`) so they
+  // match the on-disk files globalDefaultsInstaller writes (it installs every
+  // `skills/<file>.md` as `~/.claude/skills/aidlc-<file>.md`). Keying by
+  // filename — not phase id — keeps workspace.yaml references resolvable (no
+  // dangling chips like the old phase-id `aidlc-plan` vs file `aidlc-prd`).
+  const skillIdFor = (file: string): string => `aidlc-${file}`;
+  // The skills a phase makes available, in declared order (primary first).
+  const skillIdsOf = (p: PhaseDef): string[] => p.skillFiles.map(skillIdFor);
 
   const agents: Array<Record<string, unknown>> = [];
   for (const [persona, personaPhases] of phasesByPersona) {
     const refPhase = personaPhases[0];
     const caps = new Set<string>();
+    // Union of every skill across all phases this persona handles, deduped
+    // but order-preserving (e.g. developer → [implement, unit-test]).
+    const skillSet: string[] = [];
     for (const p of personaPhases) {
       for (const c of p.capabilities ?? []) { caps.add(c); }
+      for (const sid of skillIdsOf(p)) { if (!skillSet.includes(sid)) { skillSet.push(sid); } }
     }
     const agent: Record<string, unknown> = {
       id: `aidlc-${persona}`,
       name: persona.replace(/\b\w/g, (c) => c.toUpperCase()).replace(/-/g, ' '),
-      // Every phase this persona handles becomes one of its skills.
-      // Step.skill picks which one for that particular step.
-      skills: personaPhases.map(skillIdOf),
+      skills: skillSet,
       model: refPhase.model,
       description: `${persona} persona — handles ${personaPhases.map((p) => p.id).join(', ')}`,
     };
@@ -419,14 +356,18 @@ export function loadBuiltinPreset(extensionPath: string, workflow: BuiltinWorkfl
     agents.push(agent);
   }
 
-  // One skill entry per phase, pointing at the global composed file. The
-  // composed file is what `globalDefaultsInstaller` writes; it inlines
-  // the persona + phase-specific work so the runner sees a single
-  // self-contained prompt.
-  const skills: Array<Record<string, unknown>> = workflow.phases.map((p) => ({
-    id: skillIdOf(p),
-    path: `~/.claude/skills/aidlc-${p.id}.md`,
-  }));
+  // One workspace.yaml skill entry per *unique skill file* across all phases,
+  // pointing at the global file globalDefaultsInstaller writes.
+  const skillEntries = new Map<string, Record<string, unknown>>();
+  for (const p of workflow.phases) {
+    for (const file of p.skillFiles) {
+      const id = skillIdFor(file);
+      if (!skillEntries.has(id)) {
+        skillEntries.set(id, { id, path: `~/.claude/skills/aidlc-${file}.md` });
+      }
+    }
+  }
+  const skills: Array<Record<string, unknown>> = Array.from(skillEntries.values());
 
   const slashCommands: Array<Record<string, unknown>> = workflow.phases.map((p) => ({
     name: `/${p.id}`,
@@ -445,7 +386,7 @@ export function loadBuiltinPreset(extensionPath: string, workflow: BuiltinWorkfl
       const step: Record<string, unknown> = {
         name: p.id,
         agent: `aidlc-${p.persona}`,
-        skills: [skillIdOf(p)],
+        skills: skillIdsOf(p),
         enabled: true,
         requires: [],
         produces: producesPath ? [producesPath] : [],
@@ -526,7 +467,7 @@ function composeSkill(persona: string, instruction: string, phaseId: string, wor
   ].join('\n');
 }
 
-export { PHASES_PARALLEL };
+export { PHASES };
 
 /**
  * Returns a static pipeline summary for a built-in workflow, built from the
@@ -545,7 +486,7 @@ export function getBuiltinPipelineSummary(workflow: BuiltinWorkflow) {
       // workspace.yaml.
       name: p.id,
       agent: `aidlc-${p.persona}`,
-      skills: [p.id],
+      skills: p.skillFiles.map((f) => `aidlc-${f}`),
       enabled: true,
       produces: [] as string[],
       requires: [] as string[],

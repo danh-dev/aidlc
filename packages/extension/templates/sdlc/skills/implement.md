@@ -24,20 +24,22 @@ Read and execute `.claude/skills/_gate-check.md`. This skill = phase `implement`
    architecture and contracts exactly — don't freelance. If the design looks
    wrong, flag it to the Tech Lead instead of diverging silently.
 3. Wire new components where the project expects them (DI, routing, registration).
-4. Run the project's lint + typecheck + build locally; fix what you broke.
-5. Open a PR whose body references the epic key `$0`.
-6. Write a short summary to `docs/epics/$0/artifacts/IMPLEMENT-SUMMARY.md`:
-   branch name, files touched, which acceptance criteria are addressed, and
-   anything intentionally deferred.
+4. Write the **unit tests** for the new/changed code as you go — this step owns
+   both `aidlc-implement` and `aidlc-unit-test`, so cover the TEST-PLAN's unit
+   cases (`$0-UT*`): happy path + the error paths in the acceptance criteria.
+   Keep tests deterministic (fixed seeds, injected clock, no live network).
+5. Run the project's lint + typecheck + build + unit tests locally; everything
+   must pass before handoff.
+6. Open a PR whose body references the epic key `$0`.
+7. Write a short summary to `docs/epics/$0/artifacts/IMPLEMENT-SUMMARY.md`:
+   branch name, files touched, acceptance criteria addressed, unit-test coverage,
+   and anything intentionally deferred.
 
 ## Rules
 - Order of priority: **correct → clear → fast**. No speculative abstraction, no
   dead code, no "while I'm here" changes outside epic scope.
 - Keep diffs small and reviewable.
-- No secrets in code, logs, or client bundles. Validate untrusted input at
-  trust boundaries; parameterize queries; least-privilege scopes.
+- No secrets in code, logs, or client bundles. Validate untrusted input at trust
+  boundaries; parameterize queries; least-privilege scopes.
 - Close what you open (files, sockets, timers, subscriptions); cancel in-flight
   work when its scope is destroyed.
-- Unit tests are written in the `unit-test` phase that runs next — keep the code
-  testable (inject clocks/IO, avoid hidden globals), but don't write the test
-  suite here.
