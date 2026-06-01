@@ -89,6 +89,7 @@ const BUILTIN_PRESETS: BuiltinPreset[] = [
         skills?: Array<Record<string, unknown>>;
         slash_commands?: Array<Record<string, unknown>>;
         pipelines?: Array<Record<string, unknown>>;
+        recipes?: Array<Record<string, unknown>>;
       };
       for (const a of ws.agents ?? []) { addIfMissing(doc.agents, a); }
       for (const s of ws.skills ?? []) { addIfMissing(doc.skills, s); }
@@ -97,6 +98,10 @@ const BUILTIN_PRESETS: BuiltinPreset[] = [
       for (const c of ws.slash_commands ?? []) {
         if (!cmds.some((x) => x.name === c.name)) { cmds.push(c); }
       }
+      // Recipes drive `aidlc epic start --brief` (auto-suggest): the classifier
+      // matches the brief to a recipe, then assembles a right-sized pipeline.
+      const docRecipes = (Array.isArray(doc.recipes) ? doc.recipes : (doc.recipes = [])) as Array<Record<string, unknown>>;
+      for (const r of ws.recipes ?? []) { addIfMissing(docRecipes, r); }
       return doc;
     },
   },
