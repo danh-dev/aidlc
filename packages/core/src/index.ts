@@ -11,6 +11,8 @@ export {
   WorkspaceValidationError,
   normalizeStep,
   stepAgentId,
+  stepDagId,
+  collectWorkspaceRefIssues,
 } from './schema/WorkspaceSchema';
 export type {
   WorkspaceConfig,
@@ -19,11 +21,41 @@ export type {
   SlashCommandConfig,
   PipelineConfig,
   PipelineStepConfig,
+  RecipeConfig,
   NormalizedStep,
   StateConfig,
   SidebarConfig,
   SidebarView,
+  WorkspaceRefIssue,
 } from './schema/WorkspaceSchema';
+
+export {
+  assemblePipeline,
+  recipePipelineId,
+  PipelineAssembleError,
+} from './runs/PipelineAssembler';
+export type { AssembleOptions } from './runs/PipelineAssembler';
+
+export {
+  heuristicClassify,
+  buildClassificationPrompt,
+  parseClassificationVerdict,
+  slugEpicId,
+} from './runs/TaskClassifier';
+export type { TaskTypeVerdict, Confidence } from './runs/TaskClassifier';
+
+export {
+  scaffoldEpic,
+  mirrorRunStateToEpic,
+  mapStepStatusToEpic,
+  epicsRoot,
+  EpicScaffoldError,
+} from './runs/EpicScaffold';
+export type {
+  EpicStatus,
+  ScaffoldEpicArgs,
+  ScaffoldEpicResult,
+} from './runs/EpicScaffold';
 
 export {
   WorkspaceLoader,
