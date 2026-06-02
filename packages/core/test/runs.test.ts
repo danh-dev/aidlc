@@ -109,6 +109,34 @@ describe('PipelineRunner — state machine', () => {
     expect(s.steps[1].status).toBe('awaiting_work');
   });
 
+  it('markStepDone is idempotent — a duplicate call is a no-op (no double advance / history)', () => {
+    let s = startRun({ runId: 'R-idem', pipeline: PIPELINE_HUMAN, context: {} });
+    touch(root, 'PRD.md');
+    s = markStepDone({ state: s, pipeline: PIPELINE_HUMAN, workspaceRoot: root });
+    expect(s.steps[0].status).toBe('awaiting_review');
+    const snapshot = JSON.stringify(s);
+
+    // Second mark-done on the same (already-done) step → unchanged state.
+    const again = markStepDone({ state: s, pipeline: PIPELINE_HUMAN, workspaceRoot: root });
+    expect(JSON.stringify(again)).toBe(snapshot);
+    expect(again.currentStepIdx).toBe(0);
+
+    // And after approval, mark-done is still a no-op (status approved).
+    const approved = approveStep({ state: again, pipeline: PIPELINE_HUMAN });
+    const afterApprove = JSON.stringify(approved);
+    const noop = markStepDone({ state: approved, pipeline: PIPELINE_HUMAN, workspaceRoot: root, stepIdx: 0 });
+    expect(JSON.stringify(noop)).toBe(afterApprove);
+  });
+
+  it('markStepDone still throws for a rejected step (needs rerun, not mark-done)', () => {
+    let s = startRun({ runId: 'R-idem2', pipeline: PIPELINE_HUMAN, context: {} });
+    touch(root, 'PRD.md');
+    s = markStepDone({ state: s, pipeline: PIPELINE_HUMAN, workspaceRoot: root });
+    s = rejectStep({ state: s, reason: 'nope' });
+    expect(s.steps[0].status).toBe('rejected');
+    expect(() => markStepDone({ state: s, pipeline: PIPELINE_HUMAN, workspaceRoot: root })).toThrow(PipelineRunError);
+  });
+
   it('reject + rerun bumps revision and clears artifacts', () => {
     let s = startRun({ runId: 'R-6', pipeline: PIPELINE_HUMAN, context: {} });
     touch(root, 'PRD.md');
