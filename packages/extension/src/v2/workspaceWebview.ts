@@ -559,11 +559,13 @@ function buildState(initialView: WorkspaceView): WorkspaceState {
             skills: norm.skills,
             enabled: norm.enabled,
             produces: norm.produces,
+            produces_contains: norm.produces_contains,
             requires: norm.requires,
             depends_on: norm.depends_on,
             human_review: norm.human_review,
             auto_review: norm.auto_review,
             auto_review_runner: norm.auto_review_runner,
+            auto_review_timeout_ms: norm.auto_review_timeout_ms,
           };
         })
       : [],
@@ -1799,6 +1801,21 @@ export class WorkspaceWebview {
           obj.depends_on = inlineDeps;
         } else {
           delete obj.depends_on;
+        }
+      }
+      // Gate fields from the inline modal. Only applied on the inline path;
+      // the QuickPick path leaves the existing values (preserved via prevObj).
+      if (inlineConfig) {
+        const pc = Array.isArray(inlineConfig.produces_contains)
+          ? (inlineConfig.produces_contains as unknown[]).map(String).filter((s) => s.length > 0)
+          : [];
+        if (pc.length > 0) { obj.produces_contains = pc; } else { delete obj.produces_contains; }
+
+        const t = inlineConfig.auto_review_timeout_ms;
+        if (draft.auto_review && typeof t === 'number' && Number.isFinite(t) && t > 0) {
+          obj.auto_review_timeout_ms = Math.floor(t);
+        } else {
+          delete obj.auto_review_timeout_ms;
         }
       }
       p.steps[idx] = obj as unknown as PipelineStepConfig;
