@@ -3001,15 +3001,31 @@ export class WorkspaceWebview {
       return;
     }
 
-    // Preserve requires/produces from the existing pipeline by agent id —
-    // first occurrence consumed per match so duplicate-agent steps still
-    // pair up with their original entries in order.
-    const oldByAgent = new Map<string, Array<{ requires: string[]; produces: string[] }>>();
+    // Preserve fields the step modal doesn't edit (requires/produces and the
+    // gate fields with no UI yet: produces_contains, auto_review_timeout_ms)
+    // from the existing pipeline by agent id — first occurrence consumed per
+    // match so duplicate-agent steps still pair up with their original
+    // entries in order. Without this, re-saving a pipeline through the
+    // builder would silently drop hand-authored fields.
+    const oldByAgent = new Map<
+      string,
+      Array<{
+        requires: string[];
+        produces: string[];
+        produces_contains: string[];
+        auto_review_timeout_ms?: number;
+      }>
+    >();
     if (Array.isArray(pipeline.steps)) {
       for (const raw of pipeline.steps as PipelineStepConfig[]) {
         const norm = normalizeStep(raw);
         const arr = oldByAgent.get(norm.agent) ?? [];
-        arr.push({ requires: norm.requires, produces: norm.produces });
+        arr.push({
+          requires: norm.requires,
+          produces: norm.produces,
+          produces_contains: norm.produces_contains,
+          auto_review_timeout_ms: norm.auto_review_timeout_ms,
+        });
         oldByAgent.set(norm.agent, arr);
       }
     }
@@ -3052,6 +3068,14 @@ export class WorkspaceWebview {
       // so we round-trip whatever the webview sent.
       if (dependsOnArr.length > 0) { step.depends_on = dependsOnArr; }
       if (auto_review) { step.auto_review_runner = runner; }
+      // Round-trip gate fields that have no modal UI yet, so editing a
+      // pipeline doesn't discard hand-authored values.
+      if (carry?.produces_contains && carry.produces_contains.length > 0) {
+        step.produces_contains = carry.produces_contains;
+      }
+      if (typeof carry?.auto_review_timeout_ms === 'number') {
+        step.auto_review_timeout_ms = carry.auto_review_timeout_ms;
+      }
       newSteps.push(step);
     }
 
