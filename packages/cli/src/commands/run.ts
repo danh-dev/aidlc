@@ -95,8 +95,12 @@ export function registerRun(program: Command): void {
       }
 
       RunStateStore.save(root, next);
+      const prevStatus = state.steps[state.currentStepIdx].status;
       const step = next.steps[state.currentStepIdx];
-      if (step.status === 'awaiting_review') {
+      if (step.status === prevStatus) {
+        // Idempotent no-op: step was already marked done in this revision.
+        console.log(chalk.dim(`• Step "${step.agent}" is already ${step.status} — nothing to do.`));
+      } else if (step.status === 'awaiting_review') {
         console.log(chalk.cyan('✔') + ` Step "${step.agent}" is now ${chalk.cyan('awaiting_review')}`);
         console.log(chalk.dim(`  Approve: aidlc run approve ${runId}`));
         console.log(chalk.dim(`  Reject:  aidlc run reject ${runId} --reason "..."`));

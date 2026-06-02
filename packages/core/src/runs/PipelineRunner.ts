@@ -143,6 +143,18 @@ export function markStepDone(args: {
   if (!step) {
     throw new PipelineRunError(`No step at index ${idx}`);
   }
+  // Idempotency: a duplicate mark-done for a step already moved past
+  // awaiting_work in this revision (CI retry, dashboard double-click, exec
+  // reloading state) is a safe no-op — return current state untouched, no
+  // double history-append, no double advance. `rejected` needs rerun (which
+  // bumps revision) and `pending` is not yet startable, so both still error.
+  if (
+    step.status === 'awaiting_auto_review' ||
+    step.status === 'awaiting_review' ||
+    step.status === 'approved'
+  ) {
+    return clone(state);
+  }
   if (step.status !== 'awaiting_work') {
     throw new PipelineRunError(
       `Cannot mark step "${step.agent}" done: status is "${step.status}", expected "awaiting_work"`,
