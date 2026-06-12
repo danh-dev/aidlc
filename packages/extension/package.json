@@ -2,7 +2,7 @@
   "name": "aidlc",
   "displayName": "AIDLC",
   "description": "Drive Claude through any pipeline declared in workspace.yaml — agents, skills, pipelines, and epics with sequential approve/reject/rerun runs, plus a live Monitor for token usage and agent activity, all from VS Code.",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "publisher": "hueanmy",
   "license": "MIT",
   "repository": {
