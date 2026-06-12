@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execSync, exec, spawn } from 'child_process';
+import * as readline from 'readline';
 import { Command } from 'commander';
 import chalk from 'chalk';
 
@@ -35,8 +36,49 @@ function settingsPath(): string {
   return path.join(os.homedir(), '.claude', 'settings.json');
 }
 
-/** Detect whether the agents-observe Claude Code plugin is installed. */
-function detectPlugin(): { installed: boolean; detail: string } {
+interface PluginInfo {
+  installed: boolean;
+  /** Plugin is present AND its hooks loaded cleanly. False when claude reports a load error. */
+  loaded: boolean;
+  detail: string;
+  /** Trimmed load-error text when installed but failed to load. */
+  error?: string;
+}
+
+/**
+ * Parse `claude plugin list` for the agents-observe entry. The CLI prints one
+ * block per plugin: a header line carrying the plugin name, followed by
+ * indented `Version:`/`Scope:`/`Status:`/`Error:` fields. A failed load shows
+ * `Status: ✘ failed to load` — we must NOT treat that as a healthy install,
+ * because its hooks never register and no sessions get captured.
+ */
+function parsePluginList(out: string): PluginInfo | null {
+  if (!/agents-observe/i.test(out)) return null;
+  let current = '';
+  let status: string | null = null;
+  let error: string | null = null;
+  for (const line of out.split(/\r?\n/)) {
+    const field = line.match(/^\s*(Version|Scope|Status|Error):\s*(.*)$/i);
+    if (!field) {
+      if (/\S/.test(line)) current = line; // candidate header for the next fields
+      continue;
+    }
+    if (!/agents-observe/i.test(current)) continue; // field belongs to another plugin
+    const key = field[1].toLowerCase();
+    if (key === 'status') status = field[2].trim();
+    else if (key === 'error') error = field[2].trim();
+  }
+  const failed = status ? /✘|✗|fail|not loaded|disabled|error/i.test(status) : false;
+  return {
+    installed: true,
+    loaded: !failed,
+    detail: 'claude plugin list',
+    error: failed ? error ?? status ?? undefined : undefined,
+  };
+}
+
+/** Detect whether the agents-observe Claude Code plugin is installed and loaded. */
+function detectPlugin(): PluginInfo {
   // 1) Authoritative: ask the claude CLI.
   try {
     const out = execSync('claude plugin list', {
@@ -44,24 +86,28 @@ function detectPlugin(): { installed: boolean; detail: string } {
       timeout: 8000,
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    if (/agents-observe/i.test(out)) {
-      return { installed: true, detail: 'claude plugin list' };
-    }
+    const parsed = parsePluginList(out);
+    if (parsed) return parsed;
     // claude answered but the plugin isn't there.
-    return { installed: false, detail: 'not in `claude plugin list`' };
+    return { installed: false, loaded: false, detail: 'not in `claude plugin list`' };
   } catch {
     // `claude plugin list` unavailable (older CLI) — fall through to fs scan.
   }
 
   // 2) Fallback: look for the plugin on disk under ~/.claude/plugins.
+  //    Disk presence can't tell us if hooks loaded — assume ok.
   const pluginsRoot = path.join(os.homedir(), '.claude', 'plugins');
   try {
     const hit = scanForPlugin(pluginsRoot, 3);
-    if (hit) return { installed: true, detail: hit };
+    if (hit) return { installed: true, loaded: true, detail: hit };
   } catch {
     /* ignore */
   }
-  return { installed: false, detail: 'no plugin dir found under ~/.claude/plugins' };
+  return { installed: false, loaded: false, detail: 'no plugin dir found under ~/.claude/plugins' };
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
 /** Shallow recursive scan for a dir/file whose name contains "agents-observe". */
@@ -222,6 +268,41 @@ function spawnInherit(cmd: string, args: string[], env: NodeJS.ProcessEnv): Prom
 }
 
 /**
+ * Ask the user a yes/no question on the terminal. Defaults to NO when there is
+ * no TTY (non-interactive / piped) so we never block an automated run.
+ */
+function confirm(question: string): Promise<boolean> {
+  if (!process.stdin.isTTY) return Promise.resolve(false);
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (ans) => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(ans.trim()));
+    });
+  });
+}
+
+/**
+ * Install the agents-observe plugin via the claude CLI. `marketplace add` is
+ * best-effort (it exits non-zero when the marketplace is already configured —
+ * not a real failure), but `plugin install` must succeed. Output streams to
+ * this terminal so the user sees progress. Returns true on success.
+ */
+async function installPlugin(): Promise<boolean> {
+  console.log(chalk.bold('\nInstalling agents-observe plugin'));
+  console.log(dim('     $ claude plugin marketplace add simple10/agents-observe'));
+  await spawnInherit('claude', ['plugin', 'marketplace', 'add', 'simple10/agents-observe'], process.env);
+  console.log(dim('     $ claude plugin install agents-observe'));
+  const code = await spawnInherit('claude', ['plugin', 'install', 'agents-observe'], process.env);
+  if (code !== 0) {
+    console.log(`  ${icon(false)}  install failed (exit ${code}) — see output above`);
+    return false;
+  }
+  console.log(`  ${icon(true)}  plugin installed`);
+  return true;
+}
+
+/**
  * Actually launch the observe server. Branches on Docker availability:
  *   - docker present → plugin's `observe_cli.mjs start` (pull + run container)
  *   - no docker      → plugin's `start.mjs` in local runtime (foreground;
@@ -239,7 +320,17 @@ async function launchServer(pluginInstalled: boolean): Promise<void> {
     console.log(`  ${icon(false)}  plugin launcher not found under ~/.claude/plugins`);
     return;
   }
-  const childEnv: NodeJS.ProcessEnv = { ...process.env, [DATA_ENV_KEY]: aidlcDataDir() };
+  // agents-observe's local runtime runs `npm install` for its own deps. Pin it
+  // to the public npm registry so it never inherits a user's private registry
+  // (e.g. a CodeArtifact/Artifactory default in ~/.npmrc whose token may be
+  // expired) — those deps are all public packages. always-auth is forced off so
+  // npm doesn't demand a token for the public registry.
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    [DATA_ENV_KEY]: aidlcDataDir(),
+    npm_config_registry: 'https://registry.npmjs.org/',
+    npm_config_always_auth: 'false',
+  };
 
   if (hasDocker()) {
     console.log(`  ${dim('runtime')}  docker — launching container via plugin CLI`);
@@ -351,8 +442,16 @@ export function registerMonitor(program: Command): void {
 
       // ── Plugin ───────────────────────────────────────────────────────────
       console.log(chalk.bold('\nPlugin'));
-      if (plugin.installed) {
+      if (plugin.installed && plugin.loaded) {
         console.log(`  ${icon(true)}  agents-observe installed  ${dim(plugin.detail)}`);
+      } else if (plugin.installed) {
+        console.log(`  ${chalk.red('✘')}  agents-observe installed but ${chalk.red('FAILED TO LOAD')}  ${dim(plugin.detail)}`);
+        console.log(chalk.yellow('     its hooks are not active → no sessions will be captured.'));
+        if (plugin.error) console.log(dim('     error: ' + truncate(plugin.error, 140)));
+        console.log(dim('     fix: reinstall the plugin —'));
+        console.log(dim('       claude plugin uninstall agents-observe'));
+        console.log(dim('       claude plugin install agents-observe'));
+        console.log(dim('     if it persists, the installed plugin version is incompatible with this Claude Code build.'));
       } else {
         console.log(`  ${icon(false)}  agents-observe not installed  ${dim(plugin.detail)}`);
         console.log(dim('     install:'));
@@ -392,7 +491,7 @@ export function registerMonitor(program: Command): void {
         console.log(`  ${dim('dashboard')}       ${DASHBOARD_URL}`);
       } else {
         console.log(`  ${icon(false)}  observe server not reachable on ${dim(OBSERVE_BASE)}  ${dim(status.error ?? '')}`);
-        if (plugin.installed) {
+        if (plugin.installed && plugin.loaded) {
           console.log(dim('     the server autostarts on SessionStart — start a Claude Code session,'));
           console.log(dim('     or run it manually from the plugin (see docs/monitoring.md).'));
         }
@@ -400,7 +499,21 @@ export function registerMonitor(program: Command): void {
 
       // ── Start (optional) ──────────────────────────────────────────────────
       if (opts.start && !opts.dryRun && !status.serverUp) {
-        await launchServer(plugin.installed);
+        let pluginInstalled = plugin.installed;
+        if (!pluginInstalled) {
+          const ok = await confirm(
+            chalk.bold('\nagents-observe plugin is not installed. Install it now? ') + dim('[y/N] '),
+          );
+          if (ok) {
+            pluginInstalled = await installPlugin();
+          } else {
+            console.log(dim('     skipped — run the install commands above manually, then re-run with --start.'));
+          }
+        } else if (!plugin.loaded) {
+          console.log(chalk.yellow('\nNote: the plugin is installed but failed to load — the server may'));
+          console.log(chalk.yellow('start, but sessions will NOT be captured until you fix the load error above.'));
+        }
+        await launchServer(pluginInstalled);
       }
 
       if (opts.open && status.serverUp) {

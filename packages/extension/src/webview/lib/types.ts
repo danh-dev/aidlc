@@ -190,7 +190,148 @@ export interface MonitorAgentsState {
   dataDir: string;
 }
 
-export type MonitorTab = 'tokens' | 'agents';
+export type MonitorTab = 'tokens' | 'agents' | 'insights';
+
+// ── Session Insights (mirrors src/v2/sessionInsights.ts — keep in sync) ──────
+
+export interface TurnPoint {
+  ts: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  contextTokens: number;
+  cost: number;
+  cumulativeCost: number;
+  tools: string[];
+}
+
+export interface PromptEntry {
+  ts: string;
+  text: string;
+  source: string | null;
+  permissionMode: string | null;
+}
+
+export interface HookEvent {
+  ts: string;
+  subtype: string;
+  command: string;
+  durationMs: number;
+  error: string | null;
+}
+
+export interface HookCommandSummary {
+  command: string;
+  events: string[];
+  count: number;
+  totalMs: number;
+  errorCount: number;
+  lastError: string | null;
+}
+
+export interface CompactionEvent {
+  ts: string;
+  preTokens: number | null;
+  trigger: string | null;
+}
+
+export interface ToolCount {
+  name: string;
+  count: number;
+}
+
+export interface RetrievalSummary {
+  byTool: ToolCount[];
+  fileReads: number;
+  webSearches: number;
+  webFetches: number;
+  mcpReads: number;
+  readPaths: string[];
+}
+
+export interface SubagentInsight {
+  agentId: string;
+  agentType: string | null;
+  parentToolUuid: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cost: number;
+  tools: ToolCount[];
+}
+
+export interface SessionTotals {
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  cost: number;
+}
+
+export interface SessionInsight {
+  sessionId: string;
+  project: string;
+  projectPath: string;
+  cwd: string;
+  title: string | null;
+  gitBranch: string | null;
+  version: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  totals: SessionTotals;
+  cache: { hitRatio: number; readTokens: number; creationTokens: number };
+  context: { peakTokens: number; lastTokens: number };
+  turns: TurnPoint[];
+  prompts: PromptEntry[];
+  hooks: HookEvent[];
+  hookSummary: HookCommandSummary[];
+  compactions: CompactionEvent[];
+  fileEdits: number;
+  retrieval: RetrievalSummary;
+  toolUse: ToolCount[];
+  subagents: SubagentInsight[];
+}
+
+export interface SessionListItem {
+  sessionId: string;
+  project: string;
+  projectPath: string;
+  jsonlPath: string;
+  mtimeMs: number;
+  sizeBytes: number;
+}
+
+/** State for the "Insights" tab of the unified Monitor panel. */
+export interface InsightPanelState {
+  sessions: SessionListItem[];
+  selectedPath: string | null;
+  insight: SessionInsight | null;
+  loading: boolean;
+}
+
+/** Live OTel snapshot (mirrors src/v2/otelReceiver.ts). */
+export interface OtelModelRow { model: string; tokens: number; cost: number; }
+export interface OtelSnapshot {
+  listening: boolean;
+  port: number;
+  receiving: boolean;
+  lastEventAt: number | null;
+  tokensByType: Record<string, number>;
+  totalTokens: number;
+  totalCostUsd: number;
+  byModel: OtelModelRow[];
+  sessions: number;
+  linesAdded: number;
+  linesRemoved: number;
+  commits: number;
+  envConfigured: boolean;
+}
 
 export interface SidebarState {
   hasFolder: boolean;

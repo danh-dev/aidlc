@@ -12,11 +12,19 @@ import { StrictMode, useEffect, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { TokenReportView } from '../components/TokenReportView';
 import { AgentsView } from '../components/AgentsView';
+import { InsightsView } from '../components/InsightsView';
 import { useHostState } from '../hooks/useHostState';
 import { useThemeBridge } from '../hooks/useThemeBridge';
 import { onHostMessage } from '../lib/bridge';
 import { cn } from '../lib/utils';
-import type { TokenReportPanelState, MonitorAgentsState, MonitorTab } from '../lib/types';
+import type {
+  TokenReportPanelState,
+  MonitorAgentsState,
+  MonitorTab,
+  InsightPanelState,
+  SessionListItem,
+  SessionInsight,
+} from '../lib/types';
 import '../styles.css';
 
 function useAgentsState(): MonitorAgentsState | null {
@@ -26,6 +34,34 @@ function useAgentsState(): MonitorAgentsState | null {
       onHostMessage((msg) => {
         if (msg.type === 'agentStatus' && msg.state !== undefined) {
           setState(msg.state as MonitorAgentsState);
+        }
+      }),
+    [],
+  );
+  return state;
+}
+
+function useInsightState(): InsightPanelState {
+  const [state, setState] = useState<InsightPanelState>({
+    sessions: [],
+    selectedPath: null,
+    insight: null,
+    loading: false,
+  });
+  useEffect(
+    () =>
+      onHostMessage((msg) => {
+        if (msg.type === 'sessionList') {
+          setState((s) => ({ ...s, sessions: (msg.sessions as SessionListItem[]) ?? [] }));
+        } else if (msg.type === 'insightLoading') {
+          setState((s) => ({ ...s, loading: true, selectedPath: (msg.selectedPath as string) ?? s.selectedPath }));
+        } else if (msg.type === 'insight') {
+          setState((s) => ({
+            ...s,
+            loading: false,
+            selectedPath: (msg.selectedPath as string) ?? s.selectedPath,
+            insight: (msg.insight as SessionInsight | null) ?? null,
+          }));
         }
       }),
     [],
@@ -61,6 +97,7 @@ function App() {
   useThemeBridge();
   const tokenState = useHostState<TokenReportPanelState>();
   const agentsState = useAgentsState();
+  const insightState = useInsightState();
 
   const initialTab: MonitorTab =
     (typeof window !== 'undefined' && window.__AIDLC_MONITOR_TAB__) || 'tokens';
@@ -70,8 +107,8 @@ function App() {
   useEffect(
     () =>
       onHostMessage((msg) => {
-        if (msg.type === 'switchTab' && (msg.tab === 'tokens' || msg.tab === 'agents')) {
-          setTab(msg.tab);
+        if (msg.type === 'switchTab' && (msg.tab === 'tokens' || msg.tab === 'agents' || msg.tab === 'insights')) {
+          setTab(msg.tab as MonitorTab);
         }
       }),
     [],
@@ -87,6 +124,9 @@ function App() {
         <TabButton active={tab === 'tokens'} onClick={() => setTab('tokens')}>
           Token Usage
         </TabButton>
+        <TabButton active={tab === 'insights'} onClick={() => setTab('insights')}>
+          Insights
+        </TabButton>
         <TabButton active={tab === 'agents'} onClick={() => setTab('agents')}>
           Agents
           {agentsBadge != null && agentsBadge > 0 && (
@@ -101,6 +141,9 @@ function App() {
           embedded dashboard iframe don't reload on every tab switch. */}
       <div className={tab === 'tokens' ? 'block' : 'hidden'}>
         <TokenReportView state={tokenState} />
+      </div>
+      <div className={tab === 'insights' ? 'block' : 'hidden'}>
+        <InsightsView state={insightState} />
       </div>
       <div className={tab === 'agents' ? 'block' : 'hidden'}>
         <AgentsView state={agentsState} />

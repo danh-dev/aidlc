@@ -11,11 +11,14 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
 import * as path from 'path';
+import * as fs from 'fs';
 
 import { themeManager } from './themeManager';
 import { loadAllRecords } from './tokenRecords';
 import { buildReport, type TokenReport } from './tokenReport';
 import { missingBundleHtml } from './webviewBundleGuard';
+import { listSessions, parseSession, type SessionInsight, type SessionListItem } from './sessionInsights';
+import { OtelReceiver, setTelemetryEnv, type OtelSnapshot } from './otelReceiver';
 import {
   DASHBOARD_URL,
   OBSERVE_PORT,
@@ -24,7 +27,7 @@ import {
   type ObserveStatus,
 } from './observeClient';
 
-type MonitorTab = 'tokens' | 'agents';
+type MonitorTab = 'tokens' | 'agents' | 'insights';
 
 interface TokenPanelState {
   report: TokenReport | null;
@@ -45,6 +48,16 @@ export class MonitorWebview {
   private tokenState: TokenPanelState = { report: null, loading: false, error: null, windowDays: 30 };
   private loadPromise: Promise<void> | null = null;
   private pollTimer: ReturnType<typeof setInterval> | undefined;
+
+  // ── Session Insights state ──
+  private selectedPath: string | null = null;
+  private watchers: fs.FSWatcher[] = [];
+  private watchDebounce: ReturnType<typeof setTimeout> | undefined;
+  private parsing = false;
+
+  // ── OTel live receiver ──
+  private readonly otel = new OtelReceiver();
+  private otelPushDebounce: ReturnType<typeof setTimeout> | undefined;
 
   static show(extensionUri: vscode.Uri, tab: MonitorTab = 'tokens'): void {
     if (MonitorWebview.current) {
@@ -77,7 +90,98 @@ export class MonitorWebview {
 
     void this.loadReport();
     void this.pollAgents();
+    void this.loadSessions();
+    this.startOtel();
     this.startPolling();
+  }
+
+  // ── OTel live receiver ───────────────────────────────────────────────────
+
+  private startOtel(): void {
+    this.otel.start(() => this.pushOtelDebounced());
+    this.disposables.push({ dispose: () => this.otel.stop() });
+  }
+
+  /** Coalesce bursts of OTLP posts into at most one webview push per 500ms. */
+  private pushOtelDebounced(): void {
+    if (this.otelPushDebounce) { return; }
+    this.otelPushDebounce = setTimeout(() => {
+      this.otelPushDebounce = undefined;
+      this.pushOtel();
+    }, 500);
+  }
+
+  private pushOtel(): void {
+    const snapshot: OtelSnapshot = this.otel.snapshot();
+    void this.panel.webview.postMessage({ type: 'otel', snapshot });
+  }
+
+  // ── Session Insights ───────────────────────────────────────────────────────
+
+  /** Refresh the session list and, if nothing is selected yet, auto-pick the newest. */
+  private async loadSessions(): Promise<void> {
+    let sessions: SessionListItem[] = [];
+    try {
+      sessions = await listSessions(14);
+    } catch {
+      sessions = [];
+    }
+    void this.panel.webview.postMessage({ type: 'sessionList', sessions });
+    if (!this.selectedPath && sessions.length > 0) {
+      void this.selectSession(sessions[0].jsonlPath);
+    } else if (this.selectedPath) {
+      void this.refreshInsight();
+    }
+  }
+
+  /** Switch the active session: re-parse, push, and (re)attach the live watcher. */
+  private async selectSession(jsonlPath: string): Promise<void> {
+    this.selectedPath = jsonlPath;
+    this.stopWatch();
+    await this.refreshInsight();
+    this.startWatch(jsonlPath);
+  }
+
+  private async refreshInsight(): Promise<void> {
+    const target = this.selectedPath;
+    if (!target) { return; }
+    if (this.parsing) { return; } // a parse is in flight; the watcher will re-fire
+    this.parsing = true;
+    void this.panel.webview.postMessage({ type: 'insightLoading', selectedPath: target });
+    let insight: SessionInsight | null = null;
+    try {
+      insight = await parseSession(target);
+    } catch {
+      insight = null;
+    } finally {
+      this.parsing = false;
+    }
+    // Only push if the selection didn't change while parsing.
+    if (this.selectedPath === target) {
+      void this.panel.webview.postMessage({ type: 'insight', insight, selectedPath: target });
+    }
+  }
+
+  /** Watch the session jsonl (+ its subagents dir) for live appends. */
+  private startWatch(jsonlPath: string): void {
+    const debounced = () => {
+      if (this.watchDebounce) { clearTimeout(this.watchDebounce); }
+      this.watchDebounce = setTimeout(() => { void this.refreshInsight(); }, 500);
+    };
+    try {
+      this.watchers.push(fs.watch(jsonlPath, debounced));
+    } catch { /* file may not exist yet — ignore */ }
+    // subagents land in a sibling dir; watch it if/when present.
+    const subDir = path.join(path.dirname(jsonlPath), path.basename(jsonlPath, '.jsonl'), 'subagents');
+    try {
+      if (fs.existsSync(subDir)) { this.watchers.push(fs.watch(subDir, debounced)); }
+    } catch { /* ignore */ }
+  }
+
+  private stopWatch(): void {
+    if (this.watchDebounce) { clearTimeout(this.watchDebounce); this.watchDebounce = undefined; }
+    for (const w of this.watchers) { try { w.close(); } catch { /* ignore */ } }
+    this.watchers = [];
   }
 
   // ── Token report ─────────────────────────────────────────────────────────
@@ -113,7 +217,7 @@ export class MonitorWebview {
       5,
       vscode.workspace.getConfiguration('aidlc.monitor').get<number>('pollIntervalSeconds', 10),
     );
-    this.pollTimer = setInterval(() => { void this.pollAgents(); }, intervalSec * 1000);
+    this.pollTimer = setInterval(() => { void this.pollAgents(); this.pushOtel(); }, intervalSec * 1000);
     this.disposables.push({ dispose: () => { if (this.pollTimer) clearInterval(this.pollTimer); } });
   }
 
@@ -141,6 +245,23 @@ export class MonitorWebview {
       case 'ready':
         this.pushTokenState();
         void this.pollAgents();
+        void this.loadSessions();
+        this.pushOtel();
+        return;
+      case 'enableOtel':
+        try {
+          setTelemetryEnv(true);
+          void vscode.window.showInformationMessage(
+            'Claude Code telemetry enabled → AIDLC Insights. Restart your Claude Code sessions for it to take effect.',
+          );
+        } catch (e) {
+          void vscode.window.showErrorMessage('Failed to write telemetry env: ' + (e instanceof Error ? e.message : String(e)));
+        }
+        this.pushOtel();
+        return;
+      case 'disableOtel':
+        try { setTelemetryEnv(false); } catch { /* ignore */ }
+        this.pushOtel();
         return;
       case 'refresh':
         void this.loadReport();
@@ -148,11 +269,25 @@ export class MonitorWebview {
       case 'refreshAgents':
         void this.pollAgents();
         return;
+      case 'listSessions':
+        void this.loadSessions();
+        return;
+      case 'selectSession': {
+        const p = typeof msg.jsonlPath === 'string' ? msg.jsonlPath : '';
+        if (p) { void this.selectSession(p); }
+        return;
+      }
       case 'openExternal':
         void vscode.env.openExternal(vscode.Uri.parse(DASHBOARD_URL));
         return;
       case 'startMonitor': {
-        const terminal = vscode.window.createTerminal({ name: 'AIDLC Monitor' });
+        // Pin agents-observe's `npm install` to the public registry so it never
+        // inherits a private CodeArtifact/Artifactory default (whose token may
+        // be expired → E401). Set on the terminal so it applies to the whole tree.
+        const terminal = vscode.window.createTerminal({
+          name: 'AIDLC Monitor',
+          env: { npm_config_registry: 'https://registry.npmjs.org/', npm_config_always_auth: 'false' },
+        });
         terminal.sendText('aidlc monitor --start');
         terminal.show();
         // The server can take a while to come up (docker pull, or a local
@@ -174,6 +309,8 @@ export class MonitorWebview {
   private dispose(): void {
     MonitorWebview.current = undefined;
     if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.otelPushDebounce) clearTimeout(this.otelPushDebounce);
+    this.stopWatch();
     while (this.disposables.length) this.disposables.pop()?.dispose();
   }
 
