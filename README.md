@@ -88,6 +88,8 @@ aidlc init                    # scaffold .aidlc/workspace.yaml + skills/ + runs/
 aidlc validate                # parse + Zod-validate workspace.yaml
 aidlc doctor                  # workspace + claude binary + auth + env health checks
 aidlc list [--json]           # print agents, skills, pipelines
+aidlc guide                   # static getting-started reference (no LLM)
+aidlc ask "<question>"        # ask Claude about aidlc — setup, concepts, commands
 ```
 
 ### Dynamic config (mirrors the VS Code Builder)

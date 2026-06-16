@@ -434,6 +434,11 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       case 'openClaude':
         await vscode.commands.executeCommand('aidlc.openClaudeTerminal');
         return;
+      case 'askAidlc': {
+        const question = typeof msg.question === 'string' ? msg.question : undefined;
+        await vscode.commands.executeCommand('aidlc.ask', question);
+        return;
+      }
       case 'openProject': {
         const picked = await vscode.window.showOpenDialog({
           canSelectFolders: true, canSelectFiles: false, canSelectMany: false,

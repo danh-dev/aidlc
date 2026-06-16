@@ -97,6 +97,7 @@ export type {
 export { RunnerRegistry } from './runner/RunnerRegistry';
 export { DefaultRunner } from './runner/DefaultRunner';
 export type { DefaultRunnerOptions } from './runner/DefaultRunner';
+export { isInsideClaudeCodeSession, hasClaudeLogin, buildClaudeSpawnEnv } from './runner/claudeEnv';
 export {
   CustomRunnerLoader,
   validateRunnerExport,
@@ -179,5 +180,8 @@ export {
   DEFAULT_GLOBAL_WORKFLOW_IDS,
 } from './presets/globalDefaults';
 export { renderTemplate } from './presets/templateRenderer';
+
+// Shared help/knowledge content for `ask` + `guide` (CLI + extension).
+export { AIDLC_KNOWLEDGE, AIDLC_CLI_GUIDE_TEXT } from './help/aidlcGuide';
 
 export const AIDLC_CORE_VERSION = '0.1.0';
