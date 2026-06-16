@@ -11,6 +11,7 @@
 
 import { spawn } from 'child_process';
 import type { AidlcRunner, RunnerContext, RunnerResult } from './types';
+import { buildClaudeSpawnEnv } from './claudeEnv';
 
 export interface DefaultRunnerOptions {
   /**
@@ -48,7 +49,10 @@ export class DefaultRunner implements AidlcRunner {
 
     const proc = spawn(bin, args, {
       cwd: ctx.workspaceRoot,
-      env: { ...process.env, ...ctx.env },
+      // Strip the ephemeral ANTHROPIC_* key Claude Code injects when AIDLC runs
+      // inside a Claude Code session — a fresh `claude` rejects it as invalid.
+      // ctx.env (workspace-configured) is layered last so explicit keys win.
+      env: buildClaudeSpawnEnv(ctx.env),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

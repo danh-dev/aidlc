@@ -7,6 +7,9 @@ import {
   WorkspaceLoader,
   WorkspaceNotFoundError,
   RunStateStore,
+  isInsideClaudeCodeSession,
+  hasClaudeLogin,
+  buildClaudeSpawnEnv,
 } from '@aidlc/core';
 import { resolveWorkspaceRoot } from '../workspaceRoot';
 
@@ -18,6 +21,80 @@ interface Check {
 
 function ok(label: string, info?: string): Check   { return { label, pass: true,  info }; }
 function fail(label: string, info?: string): Check  { return { label, pass: false, info }; }
+
+/** Claude Code reads flags like CLAUDE_CODE_USE_BEDROCK=1 as truthy on presence. */
+function envTruthy(v: string | undefined): boolean {
+  return !!v && v !== '0' && v.toLowerCase() !== 'false';
+}
+
+/**
+ * Determine which auth mode Claude (and therefore AIDLC) will use — and report
+ * it the way AIDLC actually behaves. Bedrock / Vertex win first (their env is
+ * never stripped). Then a `claude login`: AIDLC strips an inherited
+ * ANTHROPIC_* key whenever a login exists (see buildClaudeSpawnEnv), so login
+ * is what runs even if a stale key sits in the shell. A bare API key / token is
+ * only the effective auth when there is no login to prefer.
+ */
+function detectAuth(claudeBin: string): Check {
+  const e = process.env;
+
+  if (envTruthy(e.CLAUDE_CODE_USE_BEDROCK)) {
+    const region = e.AWS_REGION || e.AWS_DEFAULT_REGION;
+    const cred =
+      e.AWS_PROFILE ? `profile ${e.AWS_PROFILE}` :
+      (e.AWS_ACCESS_KEY_ID || e.AWS_SESSION_TOKEN) ? 'AWS env credentials' :
+      'AWS default credential chain';
+    return ok('Auth: AWS Bedrock', [cred, region && `region ${region}`].filter(Boolean).join(', '));
+  }
+
+  if (envTruthy(e.CLAUDE_CODE_USE_VERTEX)) {
+    const region = e.CLOUD_ML_REGION || e.VERTEX_REGION;
+    const project = e.ANTHROPIC_VERTEX_PROJECT_ID;
+    const info = [project && `project ${project}`, region && `region ${region}`].filter(Boolean).join(', ');
+    return ok('Auth: Google Vertex AI', info || undefined);
+  }
+
+  // Prefer a `claude login` over any inherited key — AIDLC strips the key when a
+  // login exists so the OAuth session is used (avoids "Invalid API key" from a
+  // stale/scoped shell key). Cheap offline check: ~/.claude.json `oauthAccount`.
+  if (hasClaudeLogin()) {
+    const shadowed = !!e.ANTHROPIC_API_KEY;
+    return ok('Auth: claude login (claude.ai / OAuth)',
+      shadowed ? 'inherited ANTHROPIC_API_KEY ignored in favor of login' : 'no ANTHROPIC_API_KEY needed');
+  }
+
+  // No login. Inside a Claude Code session the inherited key is ephemeral and
+  // gets stripped too, so don't report it. Otherwise a deliberately-set key /
+  // token is the real (and kept) auth.
+  const ephemeralKey = isInsideClaudeCodeSession();
+
+  if (e.ANTHROPIC_API_KEY && !ephemeralKey) {
+    return ok('Auth: ANTHROPIC_API_KEY set');
+  }
+
+  if (e.ANTHROPIC_AUTH_TOKEN && !ephemeralKey) {
+    return ok('Auth: ANTHROPIC_AUTH_TOKEN set', e.ANTHROPIC_BASE_URL ? `base_url ${e.ANTHROPIC_BASE_URL}` : undefined);
+  }
+
+  // Last resort — the login marker may be absent for some setups (enterprise
+  // SSO, relocated config). `claude config list` exits 0 only when claude can
+  // actually reach a model, so a success here still means "auth works".
+  if (claudeBin) {
+    try {
+      execSync('claude config list', {
+        encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'],
+        env: buildClaudeSpawnEnv(),
+      });
+      return ok('Auth: claude login (claude.ai / OAuth)', 'no ANTHROPIC_API_KEY needed');
+    } catch {
+      return fail('Not authenticated',
+        'use one of: claude login · ANTHROPIC_API_KEY · CLAUDE_CODE_USE_BEDROCK · CLAUDE_CODE_USE_VERTEX');
+    }
+  }
+
+  return fail('Not authenticated',
+    'install claude + run `claude login`, or set ANTHROPIC_API_KEY / CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX');
+}
 
 function printSection(title: string, checks: Check[]): void {
   console.log(chalk.bold(`\n${title}`));
@@ -86,27 +163,12 @@ export function registerDoctor(program: Command): void {
         }
       }
 
-      // Auth: check ANTHROPIC_API_KEY or claude internal login
-      const apiKeySet = !!process.env.ANTHROPIC_API_KEY;
-      if (apiKeySet) {
-        claudeChecks.push(ok('ANTHROPIC_API_KEY set'));
-      } else {
-        // Claude Code can auth via its own login; check if claude can respond
-        if (claudeBin) {
-          try {
-            execSync('claude config list', {
-              encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'],
-            });
-            claudeChecks.push(ok('Claude authenticated (via claude config)', 'no ANTHROPIC_API_KEY needed'));
-          } catch {
-            claudeChecks.push(fail('Not authenticated',
-              'set ANTHROPIC_API_KEY or run: claude login'));
-          }
-        } else {
-          claudeChecks.push(fail('ANTHROPIC_API_KEY not set',
-            'set ANTHROPIC_API_KEY env var or install claude and run: claude login'));
-        }
-      }
+      // Auth: AIDLC just shells out to `claude`, so any auth mode Claude Code
+      // itself supports is valid here. Recognize them all — Bedrock / Vertex /
+      // gateway-token / raw API key — before falling back to the user's own
+      // `claude login`, so users on AWS Bedrock (etc.) aren't wrongly told
+      // they're "Not authenticated" (issue #55).
+      claudeChecks.push(detectAuth(claudeBin));
 
       printSection('Claude', claudeChecks);
 

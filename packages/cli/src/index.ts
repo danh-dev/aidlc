@@ -17,6 +17,8 @@ import { registerDashboard } from './commands/dashboard';
 import { registerEpic } from './commands/epic';
 import { registerRecipe } from './commands/recipe';
 import { registerMonitor } from './commands/monitor';
+import { registerAsk } from './commands/ask';
+import { registerGuide } from './commands/guide';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json') as { version: string };
 
@@ -45,6 +47,8 @@ registerDashboard(program);
 registerEpic(program);
 registerRecipe(program);
 registerMonitor(program);
+registerAsk(program);
+registerGuide(program);
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(err instanceof Error ? err.message : String(err));

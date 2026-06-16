@@ -26,7 +26,9 @@ cd packages/cli && npm link                  # makes `aidlc` available globally
 
 - **Node.js ≥ 18**
 - **`claude` CLI** on PATH — install from https://github.com/anthropics/claude-code
-- **Authentication** — either `ANTHROPIC_API_KEY` env var, or `claude config list` returning ok
+- **Authentication** — any mode Claude Code supports: `claude login`, `ANTHROPIC_API_KEY`,
+  AWS Bedrock (`CLAUDE_CODE_USE_BEDROCK=1` + AWS profile/credentials), Google Vertex
+  (`CLAUDE_CODE_USE_VERTEX=1`), or a gateway `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL`
 
 Run `aidlc doctor` to verify all of the above.
 
@@ -54,6 +56,27 @@ Global flags available on every subcommand:
 | Flag | Default | Purpose |
 |---|---|---|
 | `-w, --workspace <path>` | `cwd` | Workspace root (containing `.aidlc/`). Also reads `AIDLC_WORKSPACE` env. |
+
+### `guide` — getting-started reference
+
+```
+aidlc guide
+```
+
+Prints a static, no-LLM getting-started card (prerequisites → bootstrap →
+build config → run → watch). Works before any workspace or `claude` exists.
+
+### `ask` — ask Claude about AIDLC
+
+```
+aidlc ask "how do I start a run?"
+aidlc ask how do I set up the code-review preset
+```
+
+Asks the local `claude` CLI a question about AIDLC — what it is, how to set it
+up, and which command does what — grounded in a built-in reference so answers
+stay accurate. Needs `claude` on PATH (run `aidlc doctor` to verify); works even
+before a workspace is initialized.
 
 ### `init` — bootstrap a workspace
 
@@ -420,7 +443,7 @@ Runs and presets are local-only — gitignore `.aidlc/runs/` and
 
 | Problem | Likely fix |
 |---|---|
-| `aidlc doctor` says "Not authenticated" | `claude login` (Claude Code) or set `ANTHROPIC_API_KEY` |
+| `aidlc doctor` says "Not authenticated" | Use any Claude Code auth mode: `claude login`, `ANTHROPIC_API_KEY`, AWS Bedrock (`CLAUDE_CODE_USE_BEDROCK=1` + AWS profile/creds), Vertex (`CLAUDE_CODE_USE_VERTEX=1`), or `ANTHROPIC_AUTH_TOKEN`. doctor now detects all of these. |
 | `aidlc run exec` fails with "missing artifacts" | The agent didn't produce the files declared in `pipeline.steps[].produces`. Check the paths or fix the agent's skill. |
 | `aidlc run start` rejects the runId | RunIds must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`. No spaces, no leading dashes. |
 | Pipeline step appears as a string in YAML, but I edited it as an object | Both forms are valid. The CLI writes string form when there's no metadata, object form when there's `human_review` or `produces`. |

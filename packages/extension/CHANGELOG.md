@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.0
+
+### Ask AIDLC + Bedrock/Vertex auth
+
+- feat(extension): **Ask AIDLC** — a new button at the top of the AIDLC sidebar (and `AIDLC: Ask AIDLC` command) that opens a **chat panel** for asking what AIDLC does and how to set it up. Common questions (the suggestion chips + close paraphrases) answer **instantly** from curated templates; anything else streams from the local `claude` with a "Thinking…" indicator and conversation context for follow-ups — all grounded in a shared knowledge reference so answers stay accurate.
+- feat(cli): `aidlc ask "<question>"` — ask Claude about AIDLC (setup, concepts, commands), and `aidlc guide` — a static, no-LLM getting-started reference card. Both work before a workspace is initialized.
+- fix(cli): `aidlc doctor` now recognizes every auth mode Claude Code supports — **AWS Bedrock** (`CLAUDE_CODE_USE_BEDROCK`), **Google Vertex** (`CLAUDE_CODE_USE_VERTEX`), gateway `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, and a normal `claude login` (detected offline via `~/.claude.json`, no model call). Fixes false "Not authenticated" reports for Bedrock/Vertex users ([#55](https://github.com/aidlc-io/aidlc/issues/55)).
+- fix(core/cli/extension): AIDLC now strips an inherited `ANTHROPIC_API_KEY` before spawning `claude` whenever the user has a `claude login` (or is inside a Claude Code session, where the key is ephemeral) — a stale/scoped shell key was shadowing a good OAuth login and failing with "Invalid API key". Pipeline runs, `aidlc ask`, and the extension's Ask now use the login, matching aidlc-testagent. A deliberately-set key with no login is left untouched, and a workspace.yaml `environment` key always wins.
+
 ## 1.3.2
 
 - feat(extension): ❤️ **Sponsor** button on the Marketplace listing (`sponsor.url` → [github.com/sponsors/hueanmy](https://github.com/sponsors/hueanmy)); the CLI package gains a matching npm `funding` field.

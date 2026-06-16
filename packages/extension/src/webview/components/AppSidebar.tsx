@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Plug,
   Loader2,
+  HelpCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type {
@@ -95,6 +96,7 @@ export function AppSidebar({ state }: { state: SidebarState | null }) {
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
+        <AskButton />
         {!state.hasFolder ? (
           <EmptyNoFolder demoProjectExists={state.demoProjectExists} />
         ) : (
@@ -164,6 +166,24 @@ export function AppSidebar({ state }: { state: SidebarState | null }) {
 
       <Footer hasFolder={state.hasFolder} />
     </aside>
+  );
+}
+
+function AskButton() {
+  // Always visible — the whole point is helping users understand the
+  // extension and how to set it up, which matters most *before* a workspace
+  // exists. Routes to the host `aidlc.ask` command (prompts → claude → preview).
+  return (
+    <button
+      type="button"
+      onClick={() => postMessage({ type: 'askAidlc' })}
+      title="Ask Claude about AIDLC — what it does, how to set it up"
+      className="flex w-full items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/15"
+    >
+      <HelpCircle className="h-3.5 w-3.5" />
+      <span>Ask AIDLC</span>
+      <ChevronRight className="ml-auto h-3.5 w-3.5 opacity-70" />
+    </button>
   );
 }
 
