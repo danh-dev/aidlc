@@ -9,9 +9,12 @@ import {
   approveStep,
   rejectStep,
   rerunStep,
+  requestStepUpdate,
   checkBudget,
   verifyRun,
   renderRunReport,
+  runAutoReview,
+  submitAutoReviewVerdict,
   PipelineRunError,
   RUN_ID_PATTERN,
   type RunState,
@@ -195,6 +198,36 @@ export function registerRun(program: Command): void {
       console.log(chalk.dim(`  When done: aidlc run mark-done ${runId}`));
     });
 
+  // ── request-update ───────────────────────────────────────────────────────────
+  cmd
+    .command('request-update <runId> <step>')
+    .description(
+      'Reopen an already-approved step for changes (bumps revision, resets downstream).\n' +
+      '  <step> can be a 0-based index or an agent id. Mirrors the extension\'s "Request update".',
+    )
+    .option('--feedback <text>', 'Notes for the next attempt (stored on the step)')
+    .action((runId: string, step: string, opts: { feedback?: string }, actionCmd: Command) => {
+      const root     = resolveWorkspaceRoot(actionCmd);
+      const state    = requireRun(root, runId);
+      const pipeline = requirePipelineForRun(root, state);
+      const stepIdx  = requireStepIdx(state, step);
+
+      let next;
+      try {
+        next = requestStepUpdate({ state, pipeline, stepIdx, feedback: opts.feedback });
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+
+      RunStateStore.save(root, next);
+      const target = next.steps[stepIdx];
+      console.log(chalk.yellow('↻') + ` Reopened "${target.agent}" for update (rev ${target.revision})`);
+      if (opts.feedback) { console.log(chalk.dim(`  Feedback: ${opts.feedback}`)); }
+      console.log(chalk.dim(`  When done: aidlc run mark-done ${runId}`));
+      printRunSummary(next);
+    });
+
   // ── delete ─────────────────────────────────────────────────────────────────
   cmd
     .command('delete <runId>')
@@ -339,6 +372,16 @@ async function execLoop(
     }
 
     const step = state.steps[state.currentStepIdx];
+
+    // Auto-review gate: the step's produces validated, now run its
+    // auto_review_runner validator headlessly. submitAutoReviewVerdict
+    // transitions the step away from awaiting_auto_review (→ rejected, →
+    // awaiting_review, or auto-advance), so the next iteration picks it up.
+    if (step.status === 'awaiting_auto_review') {
+      const proceed = await runAutoReviewStep(root, runId);
+      if (!proceed) { process.exit(1); }
+      continue;
+    }
 
     // Stop at human_review unless --auto-approve
     if (step.status === 'awaiting_review') {
@@ -511,7 +554,9 @@ async function execStep(
   RunStateStore.save(root, next);
 
   const doneStep = next.steps[stepIdx];
-  if (doneStep.status === 'awaiting_review') {
+  if (doneStep.status === 'awaiting_auto_review') {
+    console.log(chalk.cyan(`\n✔  Step "${agentId}" done — auto-review pending.`));
+  } else if (doneStep.status === 'awaiting_review') {
     console.log(chalk.cyan(`\n✔  Step "${agentId}" done — awaiting review.`));
   } else {
     console.log(chalk.green(`\n✔  Step "${agentId}" approved.`));
@@ -520,6 +565,47 @@ async function execStep(
     console.log(chalk.dim(`   cost: $${result.costUsd.toFixed(4)}`));
   }
 
+  return true;
+}
+
+async function runAutoReviewStep(root: string, runId: string): Promise<boolean> {
+  const state = RunStateStore.load(root, runId);
+  if (!state) {
+    console.error(chalk.red(`Run "${runId}" disappeared.`));
+    return false;
+  }
+  const pipeline = requirePipelineForRun(root, state);
+  const step = state.steps[state.currentStepIdx];
+
+  console.log(chalk.bold(`\n🔍  Auto-review: "${step.agent}"`));
+
+  let verdict;
+  try {
+    verdict = await runAutoReview({ workspaceRoot: root, state, pipeline });
+  } catch (err) {
+    // Config-level failure (missing/unloadable runner). The validator's own
+    // errors are already converted to a `reject` verdict inside runAutoReview;
+    // this only fires for a misconfigured auto_review_runner.
+    console.error(chalk.red(`✘  Auto-review could not run: ${err instanceof Error ? err.message : String(err)}`));
+    return false;
+  }
+
+  let next: RunState;
+  try {
+    next = submitAutoReviewVerdict({ state, pipeline, verdict });
+  } catch (err) {
+    console.error(chalk.red(`✘  ${err instanceof Error ? err.message : String(err)}`));
+    return false;
+  }
+
+  RunStateStore.save(root, next);
+
+  if (verdict.decision === 'pass') {
+    console.log(chalk.green(`✔  Auto-review passed`) + chalk.dim(` — ${verdict.reason}`));
+  } else {
+    console.log(chalk.red(`✘  Auto-review rejected`) + chalk.dim(` — ${verdict.reason}`));
+    console.log(chalk.dim(`  Fix the issue, then: aidlc run rerun ${runId} [--feedback "..."]`));
+  }
   return true;
 }
 

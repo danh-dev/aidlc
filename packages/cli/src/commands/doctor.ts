@@ -117,6 +117,10 @@ export function registerDoctor(program: Command): void {
 
       // ── Workspace ────────────────────────────────────────────────────────
       const wsChecks: Check[] = [];
+      // Declared here (not inside the `if (ws)` block) so the summary
+      // aggregation below can count skill/runner failures — otherwise a broken
+      // skill path is printed in red but doctor still exits 0.
+      const skillChecks: Check[] = [];
       let ws: Awaited<ReturnType<typeof WorkspaceLoader.load>> | null = null;
 
       const wsPath = path.join(root, '.aidlc', 'workspace.yaml');
@@ -174,7 +178,6 @@ export function registerDoctor(program: Command): void {
 
       // ── Skills ────────────────────────────────────────────────────────────
       if (ws) {
-        const skillChecks: Check[] = [];
         for (const skill of ws.config.skills) {
           if (skill.builtin) {
             // SkillLoader will validate; for now mark as assumed-ok
@@ -247,7 +250,7 @@ export function registerDoctor(program: Command): void {
       ]);
 
       // ── Summary ───────────────────────────────────────────────────────────
-      const all = [...wsChecks, ...claudeChecks, ...runChecks];
+      const all = [...wsChecks, ...claudeChecks, ...skillChecks, ...runChecks];
       const failures = all.filter(c => !c.pass);
 
       console.log();
