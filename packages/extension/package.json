@@ -263,6 +263,12 @@
           "default": 5,
           "minimum": 1,
           "description": "Debounce window for incremental rescans after source files change (seconds)."
+        },
+        "aidlc.mcp.listTimeoutSeconds": {
+          "type": "number",
+          "default": 90,
+          "minimum": 5,
+          "description": "Timeout (seconds) for `claude mcp list` in the MCP Servers panel. Claude health-checks every configured server, so raise this if you have many remote/unauthenticated servers and see a timeout."
         }
       }
     },

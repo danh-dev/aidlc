@@ -396,7 +396,10 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     this.refresh();
     this.mcpLoadPromise = (async () => {
       try {
-        const result = await loadMcpServers();
+        const timeoutSeconds = vscode.workspace
+          .getConfiguration('aidlc.mcp')
+          .get<number>('listTimeoutSeconds', 90);
+        const result = await loadMcpServers(undefined, Math.max(5, timeoutSeconds) * 1000);
         this.mcp = { servers: result.servers, loading: false, error: result.error };
       } catch (e) {
         this.mcp = {
