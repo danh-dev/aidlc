@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.1
+
+- fix(extension): correctly handle claude mcp list timeout (#61)
+- chore(cli): add .npmrc to use NPM_TOKEN for public registry publish
+- chore: update pnpm-lock.yaml with vitest (fix frozen-lockfile CI)
+
 ## 2.0.0
 
 ### Test Agent + Analyze Requirements
