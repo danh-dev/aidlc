@@ -6,6 +6,7 @@ import {
   installWorkflowGlobalsByIds,
   uninstallWorkflowGlobalsByIds,
   isWorkflowGloballyInstalled,
+  installAnnotationTools,
 } from '@aidlc/core';
 import { cliTemplatesRoot } from '../templatesRoot';
 
@@ -69,6 +70,19 @@ export function registerGlobals(program: Command): void {
         );
       }
       console.log(chalk.dim('  Files live under ~/.claude/agents and ~/.claude/skills'));
+
+      // Annotation + epic-memory tooling (renderer, annotron, epic-memory, and
+      // the /annotate-artifact + /epic-context skills). Same payload the VS Code
+      // extension installs on activation.
+      const ann = installAnnotationTools(root);
+      if (ann.installed) {
+        console.log(
+          chalk.green('✔') +
+          ' annotation tooling — renderer + annotron + epic-memory + /annotate-artifact, /epic-context',
+        );
+      } else {
+        console.log(chalk.dim(`  (annotation tooling skipped: ${ann.reason})`));
+      }
     });
 
   // ── uninstall ─────────────────────────────────────────────────────────────────

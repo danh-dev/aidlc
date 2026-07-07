@@ -31,6 +31,9 @@
   "files": [
     "dist/bundle.js",
     "dist/templates",
+    "dist/tools",
+    "dist/vendor",
+    "dist/assets",
     "README.md",
     "AUTOMATION.md"
   ],
@@ -38,7 +41,7 @@
     "compile": "tsc -p ./",
     "build": "tsc -p ./",
     "clean": "rm -rf dist",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=dist/bundle.js --external:fsevents && rm -rf dist/templates && cp -R ../core/templates dist/templates",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=dist/bundle.js --external:fsevents && rm -rf dist/templates && cp -R ../core/templates dist/templates && rm -rf dist/tools dist/vendor dist/assets && cp -R ../../tools dist/tools && mkdir -p dist/vendor && cp -R ../../vendor/annotron dist/vendor/annotron && cp -R ../extension/assets dist/assets",
     "prepublishOnly": "pnpm bundle"
   },
   "publishConfig": {

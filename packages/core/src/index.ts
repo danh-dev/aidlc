@@ -180,6 +180,9 @@ export {
   DEFAULT_GLOBAL_WORKFLOW_IDS,
 } from './presets/globalDefaults';
 export { renderTemplate } from './presets/templateRenderer';
+// Annotation + epic-memory tooling install (shared by ext + CLI).
+export { installAnnotationTools } from './presets/annotationTools';
+export type { AnnotationToolsReport } from './presets/annotationTools';
 
 // Shared help/knowledge content for `ask` + `guide` (CLI + extension).
 export { AIDLC_KNOWLEDGE, AIDLC_CLI_GUIDE_TEXT } from './help/aidlcGuide';
