@@ -13,7 +13,6 @@ import {
   User,
   ExternalLink,
   Highlighter,
-  Eye,
   Brain,
   Folder,
   Play,
@@ -579,56 +578,22 @@ function StepDetail({
         <DetailLabel icon={<FileText className="h-3 w-3" />} text="Artifact" />
         {artifactName ? (
           artifactExists ? (
-            <div className="flex w-fit flex-wrap items-center gap-1.5">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  postMessage({
-                    type: 'openArtifactFile',
-                    epicDir: epic.epicDir,
-                    filename: artifactName,
-                  });
-                }}
-                className="inline-flex w-fit items-center gap-1 rounded border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[11px] text-primary transition-colors hover:border-primary/50 hover:bg-primary/20"
-                title={`Open ${artifactName} in a new tab`}
-              >
-                <span>{artifactName}</span>
-                <ExternalLink className="h-2.5 w-2.5 opacity-70" />
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  postMessage({
-                    type: 'annotateArtifact',
-                    epicDir: epic.epicDir,
-                    filename: artifactName,
-                  });
-                }}
-                className="inline-flex w-fit items-center gap-1 rounded border border-border bg-surface px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary"
-                title={`Start the annotate loop for ${artifactName}: Claude opens it in annotron, receives your feedback, and edits the .md`}
-              >
-                <Highlighter className="h-2.5 w-2.5" />
-                <span>Annotate</span>
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  postMessage({
-                    type: 'openRenderedHtml',
-                    epicDir: epic.epicDir,
-                    filename: artifactName,
-                  });
-                }}
-                className="inline-flex w-fit items-center gap-1 rounded border border-border bg-surface px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary"
-                title={`Open the rendered HTML of ${artifactName} (with revision history) in your browser`}
-              >
-                <Eye className="h-2.5 w-2.5" />
-                <span>View HTML</span>
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                postMessage({
+                  type: 'artifactMenu',
+                  epicDir: epic.epicDir,
+                  filename: artifactName,
+                });
+              }}
+              className="inline-flex w-fit items-center gap-1 rounded border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[11px] text-primary transition-colors hover:border-primary/50 hover:bg-primary/20"
+              title={`Open ${artifactName} — choose Markdown source or HTML + feedback`}
+            >
+              <span>{artifactName}</span>
+              <ChevronDown className="h-2.5 w-2.5 opacity-70" />
+            </button>
           ) : (
             <div
               className="inline-flex w-fit items-center rounded border border-border bg-muted/50 px-2 py-0.5 font-mono text-[11px] italic text-muted-foreground opacity-70"
@@ -1169,8 +1134,7 @@ function GateButton({
 
 function EpicActions({ epic, hasInputs }: { epic: EpicSummary; hasInputs: boolean }) {
   return (
-    <div className="border-t border-border pt-4">
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
       {!epic.runId && epic.pipeline && (
         <button
           type="button"
@@ -1222,29 +1186,6 @@ function EpicActions({ epic, hasInputs }: { epic: EpicSummary; hasInputs: boolea
         <Brain className="h-3 w-3" />
         Memory
       </button>
-      </div>
-      {epic.artifactFiles.length > 0 && (
-        <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          <span className="mr-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Files
-          </span>
-          {epic.artifactFiles.map((f) => {
-            const isHtml = /\.html?$/i.test(f);
-            return (
-              <button
-                key={f}
-                type="button"
-                onClick={() => postMessage({ type: 'openArtifactAny', epicDir: epic.epicDir, filename: f })}
-                className="inline-flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 font-mono text-[10.5px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary"
-                title={isHtml ? `Open ${f} in your browser` : `Open ${f} in a tab`}
-              >
-                {isHtml ? <Eye className="h-2.5 w-2.5" /> : <FileText className="h-2.5 w-2.5" />}
-                {f}
-              </button>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }

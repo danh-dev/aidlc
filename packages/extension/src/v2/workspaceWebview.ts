@@ -427,7 +427,6 @@ interface EpicSummaryUi {
   inputs: Record<string, string>;
   epicDir: string;
   existingArtifacts: string[];
-  artifactFiles: string[];
   createdAt: string;
   /** Aggregate token usage for the epic. */
   tokenUsage?: EpicTokenUsage;
@@ -898,7 +897,6 @@ function toEpicSummaryUi(e: CoreEpicSummary): EpicSummaryUi {
     inputs: e.inputs,
     epicDir,
     existingArtifacts,
-    artifactFiles: e.artifactFiles,
     createdAt: e.createdAt,
     tokenUsage: e.tokenUsage
       ? { total: e.tokenUsage.total, hasOverlap: e.tokenUsage.hasOverlap }
@@ -1473,40 +1471,37 @@ export class WorkspaceWebview {
   }
 
   /**
-   * Open the persisted rendered HTML for an artifact in the default browser
-   * (rendering it first if missing/stale). Opened via file:// so the revision
-   * selector's relative links into `.revisions/` resolve — you can click a rev
-   * to view an old version. Distinct from Annotate (which is the annotron loop).
+   * Clicking an artifact offers two ways to open it:
+   *   - Markdown source — open the .md in an editor.
+   *   - HTML + feedback — start the annotron review loop (render if needed via
+   *     the skill's freshness-aware --all, open annotron, poll, apply to .md).
    */
-  private async openRenderedHtml(epicDir: string, filename: string): Promise<void> {
-    const artifactsDir = path.join(epicDir, 'artifacts');
-    const htmlPath = path.join(artifactsDir, filename.replace(/\.md$/i, '.html'));
-    const renderer = path.join(this.extensionUri.fsPath, 'tools', 'md-to-html.mjs');
-
-    // Render (idempotent; the renderer skips when the .html is already fresh).
-    if (fs.existsSync(renderer)) {
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const proc = spawn(process.execPath, [renderer, '--all', artifactsDir], {
-            env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-          });
-          let stderr = '';
-          proc.stderr?.on('data', (d) => { stderr += String(d); });
-          proc.on('error', reject);
-          proc.on('close', (code) => (code === 0 ? resolve() : reject(new Error(stderr.trim() || `renderer exited ${code}`))));
-        });
-      } catch (e) {
-        void vscode.window.showWarningMessage(`Không render lại được HTML (${(e as Error).message}); mở bản hiện có nếu có.`);
-      }
+  private async artifactMenu(epicDir: string, filename: string): Promise<void> {
+    type Item = vscode.QuickPickItem & { action: 'md' | 'feedback' };
+    const pick = await vscode.window.showQuickPick<Item>(
+      [
+        {
+          label: '$(markdown) Open Markdown',
+          detail: `Open ${filename} source in an editor`,
+          action: 'md',
+        },
+        {
+          label: '$(comment-discussion) Open HTML + feedback',
+          detail: 'Render if needed, open in annotron, and start the feedback loop (edits the .md)',
+          action: 'feedback',
+        },
+      ],
+      { placeHolder: `${filename} — how do you want to open it?` },
+    );
+    if (!pick) { return; }
+    if (pick.action === 'md') {
+      const filePath = path.join(epicDir, 'artifacts', filename);
+      if (!fs.existsSync(filePath)) { return; }
+      const doc = await vscode.workspace.openTextDocument(filePath);
+      await vscode.window.showTextDocument(doc, { preview: false });
+    } else {
+      this.annotateArtifact(epicDir, filename);
     }
-
-    if (!fs.existsSync(htmlPath)) {
-      void vscode.window.showErrorMessage(
-        `Chưa có ${path.basename(htmlPath)}. Bấm Annotate để tạo bản render trước.`,
-      );
-      return;
-    }
-    await vscode.env.openExternal(vscode.Uri.file(htmlPath));
   }
 
   // ── Message routing ─────────────────────────────────────────────────────
@@ -1720,39 +1715,17 @@ export class WorkspaceWebview {
         await vscode.window.showTextDocument(doc, { preview: false });
         return;
       }
-      case 'annotateArtifact': {
+      case 'artifactMenu': {
         const epicDir = String(msg.epicDir ?? '');
         const filename = String(msg.filename ?? '');
         if (!epicDir || !filename) { return; }
-        this.annotateArtifact(epicDir, filename);
+        await this.artifactMenu(epicDir, filename);
         return;
       }
       case 'openEpicMemory': {
         const epicDir = String(msg.epicDir ?? '');
         if (!epicDir) { return; }
         await this.openEpicMemory(epicDir);
-        return;
-      }
-      case 'openRenderedHtml': {
-        const epicDir = String(msg.epicDir ?? '');
-        const filename = String(msg.filename ?? '');
-        if (!epicDir || !filename) { return; }
-        await this.openRenderedHtml(epicDir, filename);
-        return;
-      }
-      case 'openArtifactAny': {
-        const epicDir = String(msg.epicDir ?? '');
-        const filename = String(msg.filename ?? '');
-        if (!epicDir || !filename) { return; }
-        const filePath = path.join(epicDir, 'artifacts', filename);
-        if (!fs.existsSync(filePath)) { return; }
-        if (/\.html?$/i.test(filename)) {
-          // Open .html in the browser (file://) so it renders + rev links work.
-          await vscode.env.openExternal(vscode.Uri.file(filePath));
-        } else {
-          const doc = await vscode.workspace.openTextDocument(filePath);
-          await vscode.window.showTextDocument(doc, { preview: false });
-        }
         return;
       }
       case 'copyCommand': {
