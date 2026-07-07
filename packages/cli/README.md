@@ -11,6 +11,16 @@ filesystem (no daemon, no IPC).
 **Claude only.** The CLI shells out to `claude --print --append-system-prompt
 <skill>`. No Anthropic SDK calls, no other model runners.
 
+### New in 0.8
+
+`aidlc globals install` now also installs the **artifact annotation** tooling under
+`~/.claude` — a zero-dependency Markdown→HTML renderer, a vendored
+[annotron](https://www.npmjs.com/package/annotron) review editor (no global install), a
+per-epic **memory** tool, and the `/annotate-artifact` + `/epic-context` skills. Review epic
+artifacts in a browser and apply feedback back to the Markdown — from a plain terminal +
+Claude Code, no VS Code required. Optional `aidlc globals memory-hook enable` auto-loads an
+epic's memory whenever a prompt mentions it. See the [`globals`](#globals--built-in-workflow-agents--skills-under-claude) command.
+
 ## Install
 
 ```sh

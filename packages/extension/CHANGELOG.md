@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.2.0
+
+### Epic-memory auto-load + git-aware AST rescan
+
+- feat(extension): **Epic-memory auto-load** (opt-in) — a "Memory auto-load: On/Off" toggle at the top of the Epics list. When on, a Claude Code `UserPromptSubmit` hook injects an epic's `epic-memory.json` (summary, decisions/constraints, reflections) into context whenever a prompt refers to that epic — so working on an epic loads its prior context automatically, without running `/epic-context`. Nothing is enabled unless you flip it; toggling only adds/removes the hook entry in `~/.claude/settings.json`.
+- feat(cli): `aidlc globals memory-hook enable | disable | status` — the terminal equivalent of the toggle (enable also installs the tooling first).
+- feat(extension): **git-aware AST rescan** — the AST graph now does a full clean rescan after git operations that change the working tree (branch switch/checkout, merge, rebase, reset, pull), via a watcher on `.git/{HEAD,ORIG_HEAD,MERGE_HEAD}`. Individual saves still trigger the fast incremental rescan.
+- chore: the epic-memory hook script ships in the tooling payload and installs under `~/.claude/tools` with the rest (extension activation and `aidlc globals install`).
+
 ## 2.1.0
 
 ### Artifact annotation loop (annotron) + epic memory
