@@ -459,6 +459,15 @@ export type StepHistoryEntry =
       kind: 'approve';
       at: string;
       revision: number;
+    }
+  | {
+      // A /annotate-artifact round that edited the .md, merged from the
+      // artifacts folder's `.annotation-history.json` at read time.
+      kind: 'annotate';
+      at: string;
+      revision: number;
+      note?: string;
+      summary?: string;
     };
 
 /** Mirror of `epicTokenAttribution.HistoryEventUsage` — kept in sync by hand. */

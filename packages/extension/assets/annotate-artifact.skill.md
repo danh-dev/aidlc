@@ -56,11 +56,16 @@ Let `R = node "$HOME/.claude/tools/md-to-html.mjs"` and
    `note`, not the CSS selector — and edit `MD`. The selector only hints *where* in the doc;
    the change lands in the `.md`.
 
-5. **Re-render + reply.**
-   - `$R --all "$ARTIFACTS"` — annotron live-reloads the browser.
+5. **Log the revision, re-render, reply.**
+   - `$R --log "$ARTIFACTS" "<FILE>.md" "<the user's note(s)>" "<what you changed>"` — appends
+     a revision-history entry (`.annotation-history.json`). This is what surfaces in the
+     pipeline History panel and in the re-rendered HTML's "Revision history" section. Do this
+     once per applied round, before re-rendering.
+   - `$R --all "$ARTIFACTS"` — re-render (now including the new history entry); annotron
+     live-reloads the browser.
    - `$A poll "$HTML" --reply "<short, action-focused summary>"` — posts your reply to the
      browser conversation log and re-arms the poll. Then loop back to step 3.
-   - Keep replies short: "Tightened the goals section, fixed the metric, added a risks table."
+   - Keep the summary short: "Tightened the goals section, fixed the metric, added a risks table."
 
 6. **Finalize.** When poll returns `"finalized": true`, the review is done. Confirm the `.md`
    already reflects every applied change (it does — each round edited the `.md`). Remind the

@@ -107,6 +107,47 @@ function asStatus(v: unknown): EpicStatus {
 }
 
 /**
+ * Read the /annotate-artifact revision history (`.annotation-history.json` in
+ * the artifacts folder) and shape it as `annotate` StepHistoryEntry[] keyed by
+ * artifact .md filename. Merged into the owning step's history at read time —
+ * never persisted into the run-state machine.
+ */
+function readAnnotationHistory(artifactsDir: string): Record<string, StepHistoryEntry[]> {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(artifactsDir, '.annotation-history.json'), 'utf8'));
+    if (!raw || typeof raw !== 'object') { return {}; }
+    const out: Record<string, StepHistoryEntry[]> = {};
+    for (const [name, list] of Object.entries(raw as Record<string, unknown>)) {
+      if (!Array.isArray(list)) { continue; }
+      out[name] = list.map((e) => {
+        const r = e as Record<string, unknown>;
+        return {
+          kind: 'annotate' as const,
+          at: String(r.at ?? ''),
+          revision: Number(r.rev ?? 0),
+          note: r.note ? String(r.note) : undefined,
+          summary: r.summary ? String(r.summary) : undefined,
+        };
+      });
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Combine run + annotation history, oldest-first by timestamp. Undefined if empty. */
+function mergeHistory(
+  run: StepHistoryEntry[] | undefined,
+  annotate: StepHistoryEntry[] | undefined,
+): StepHistoryEntry[] | undefined {
+  const merged = [...(run ?? []), ...(annotate ?? [])];
+  if (!merged.length) { return undefined; }
+  merged.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  return merged;
+}
+
+/**
  * Resolve the directory holding epic folders. Honours
  * workspace.yaml's `state.root` field; falls back to `docs/epics`.
  */
@@ -242,11 +283,17 @@ export function listEpics(workspaceRoot: string, doc: YamlDocument | null): Epic
       return namespaced || bare;
     };
 
+    const annotationHistory = readAnnotationHistory(path.join(epicDir, 'artifacts'));
+
     const stepDetails = stepStatesRaw.map((s, i) => {
       const agent = typeof s.agent === 'string' ? s.agent : '';
       const gate = stepGateByIdx.get(i) ?? { auto: false, human: false };
       const runStatus = runStepByIdx.get(i) ?? null;
-      const history = runHistoryByIdx.get(i);
+      const artifactForStep = stepArtifactByIdx.get(i);
+      const history = mergeHistory(
+        runHistoryByIdx.get(i),
+        artifactForStep ? annotationHistory[artifactForStep] : undefined,
+      );
       const rejectCount = history
         ? history.filter((e) => e.kind === 'reject').length
         : 0;

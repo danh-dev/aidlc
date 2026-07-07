@@ -113,6 +113,21 @@ export type StepHistoryEntry =
       kind: 'approve';
       at: string;
       revision: number;
+    }
+  | {
+      /**
+       * A round of the /annotate-artifact review loop that edited the .md.
+       * Sourced from the artifacts folder's `.annotation-history.json` and
+       * merged into the owning step's history at read time (never written to
+       * the run-state machine).
+       */
+      kind: 'annotate';
+      at: string;
+      revision: number;
+      /** The human's annotation note(s) for this round. */
+      note?: string;
+      /** What the agent changed in the .md in response. */
+      summary?: string;
     };
 
 /**

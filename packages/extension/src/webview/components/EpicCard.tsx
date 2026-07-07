@@ -727,6 +727,7 @@ function StepHistory({ step }: { step: EpicStepDetailFull }) {
 
   const rejectCount = step.rejectCount ?? 0;
   const rerunCount = entries.filter((e) => e.kind === 'rerun').length;
+  const annotateCount = entries.filter((e) => e.kind === 'annotate').length;
   const lastReject = [...entries].reverse().find((e) => e.kind === 'reject') as
     | (StepHistoryEntry & { kind: 'reject' })
     | undefined;
@@ -734,6 +735,7 @@ function StepHistory({ step }: { step: EpicStepDetailFull }) {
   const summary = [
     rejectCount > 0 && `rejected ${rejectCount}×`,
     rerunCount > 0 && `rerun ${rerunCount}×`,
+    annotateCount > 0 && `annotated ${annotateCount}×`,
     !rejectCount && entries.some((e) => e.kind === 'approve') && 'approved',
   ]
     .filter(Boolean)
@@ -807,6 +809,8 @@ function HistoryIcon({ kind }: { kind: StepHistoryEntry['kind'] }) {
       return <Bot className="mt-0.5 h-3 w-3 shrink-0 text-info" />;
     case 'approve':
       return <Check className="mt-0.5 h-3 w-3 shrink-0 text-success" />;
+    case 'annotate':
+      return <Highlighter className="mt-0.5 h-3 w-3 shrink-0 text-primary" />;
   }
 }
 
@@ -833,6 +837,13 @@ function HistoryLabel({ entry }: { entry: StepHistoryEntry }) {
       );
     case 'approve':
       return <span className="font-semibold text-success">Approved</span>;
+    case 'annotate':
+      return (
+        <span className="font-semibold text-primary">
+          Annotated
+          <span className="ml-1 font-normal text-muted-foreground">.md edited</span>
+        </span>
+      );
   }
 }
 
@@ -854,6 +865,13 @@ function HistoryBody({ entry }: { entry: StepHistoryEntry }) {
       );
     case 'approve':
       return null;
+    case 'annotate':
+      return (
+        <div className="space-y-0.5">
+          {entry.note && <div className="font-mono text-foreground/80">↳ {entry.note}</div>}
+          {entry.summary && <div className="text-muted-foreground">✎ {entry.summary}</div>}
+        </div>
+      );
   }
 }
 

@@ -171,6 +171,36 @@ img { max-width: 100%; height: auto; border-radius: 8px; }
   flex: none;
 }
 
+.rev-history {
+  margin-top: 3.5em;
+  border-top: 1px solid var(--border-strong);
+  padding-top: 1.4em;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: .85rem;
+}
+.rev-history > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: .01em;
+  list-style: none;
+}
+.rev-history > summary::-webkit-details-marker { display: none; }
+.rev-history > summary::before { content: "▸ "; color: var(--accent); }
+.rev-history[open] > summary::before { content: "▾ "; }
+.rev-history ol { margin: 1em 0 0; padding: 0; list-style: none; }
+.rev-history li {
+  margin: 0 0 1em; padding-left: 1em;
+  border-left: 2px solid var(--border);
+}
+.rev-history .rev-head {
+  display: flex; gap: .6em; align-items: baseline; flex-wrap: wrap;
+  color: var(--muted); font-size: .78rem;
+}
+.rev-history .rev-n { color: var(--accent); font-weight: 700; }
+.rev-history .rev-note { color: var(--text); font-weight: 600; margin: .2em 0 .1em; }
+.rev-history .rev-summary { color: var(--muted); }
+
 @media (max-width: 640px) {
   body { padding: 2.5rem 1.15rem 5rem; font-size: 1.02rem; }
   h1 { font-size: 1.7rem; }
@@ -194,6 +224,48 @@ function escapeHtml(s) {
 function firstH1(text, fallback) {
   const m = text.match(/^#\s+(.+)$/m);
   return m ? m[1].trim() : fallback;
+}
+
+// ── Annotation revision history ──────────────────────────────────────────────
+// One JSON file per artifacts folder, keyed by artifact .md filename:
+//   { "PRD.md": [ { at, rev, note, summary } ], ... }
+// The /annotate-artifact loop appends an entry each time it applies feedback to
+// the .md, so re-rendering surfaces "what changed, and why" per revision.
+const HISTORY_FILE = '.annotation-history.json';
+
+function readHistory(dir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir, HISTORY_FILE), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function logHistory(dir, mdName, note, summary) {
+  const p = path.join(dir, HISTORY_FILE);
+  const all = readHistory(dir);
+  const list = Array.isArray(all[mdName]) ? all[mdName] : [];
+  const rev = list.length ? (list[list.length - 1].rev ?? list.length) + 1 : 1;
+  list.push({ at: new Date().toISOString(), rev, note: note || '', summary: summary || '' });
+  all[mdName] = list;
+  fs.writeFileSync(p, JSON.stringify(all, null, 2) + '\n', 'utf8');
+  console.log(`logged rev ${rev} for ${mdName}`);
+}
+
+function renderHistorySection(entries) {
+  if (!entries || !entries.length) return '';
+  const items = entries.map((e) => {
+    const when = escapeHtml(e.at || '');
+    const note = e.note ? `<div class="rev-note">${escapeHtml(e.note)}</div>` : '';
+    const summary = e.summary ? `<div class="rev-summary">${escapeHtml(e.summary)}</div>` : '';
+    return `<li><div class="rev-head"><span class="rev-n">rev ${escapeHtml(String(e.rev ?? ''))}</span><time>${when}</time></div>${note}${summary}</li>`;
+  }).join('\n');
+  return `\n<details class="rev-history">
+<summary>Revision history (${entries.length})</summary>
+<ol>
+${items}
+</ol>
+</details>`;
 }
 
 function slugify(text) {
@@ -243,7 +315,7 @@ function wrapTables(body) {
     .replace(/<\/table>/g, '</table></div>');
 }
 
-function render(text, title, sourceName, siblingStems = []) {
+function render(text, title, sourceName, siblingStems = [], history = []) {
   let body = marked.parse(text, { renderer: makeRenderer(), gfm: true });
   body = rewriteSiblingLinks(body, siblingStems);
   body = wrapTables(body);
@@ -257,17 +329,17 @@ function render(text, title, sourceName, siblingStems = []) {
 </head>
 <body>
 <div class="doc-meta">Rendered from ${escapeHtml(sourceName)} · annotation copy — edit the .md source, not this file</div>
-${body}
+${body}${renderHistorySection(history)}
 </body>
 </html>
 `;
 }
 
-function convertOne(mdPath, outPath, siblingStems = []) {
+function convertOne(mdPath, outPath, siblingStems = [], history = []) {
   const text = fs.readFileSync(mdPath, 'utf8');
   const base = path.basename(mdPath);
   const title = firstH1(text, base.replace(/\.md$/i, ''));
-  fs.writeFileSync(outPath, render(text, title, base, siblingStems), 'utf8');
+  fs.writeFileSync(outPath, render(text, title, base, siblingStems, history), 'utf8');
   console.log(`wrote ${outPath}`);
 }
 
@@ -275,7 +347,19 @@ function die(msg) { console.error(msg); process.exit(1); }
 
 function main() {
   const args = process.argv.slice(2);
-  if (!args.length) die('usage: node md-to-html.mjs <in.md> [out.html] | --all <dir>');
+  if (!args.length) {
+    die('usage: node md-to-html.mjs <in.md> [out.html] | --all <dir> | --log <dir> <artifact.md> <note> <summary>');
+  }
+
+  // --log <artifactsDir> <artifact.md> <note> <summary>
+  // Append a revision-history entry; used by the /annotate-artifact loop after
+  // it applies feedback to the .md.
+  if (args[0] === '--log') {
+    const [, dir, mdName, note, summary] = args;
+    if (!dir || !mdName) die('usage: node md-to-html.mjs --log <dir> <artifact.md> <note> <summary>');
+    logHistory(dir, path.basename(mdName), note, summary);
+    return;
+  }
 
   if (args[0] === '--all') {
     const dir = args[1];
@@ -286,15 +370,17 @@ function main() {
       .map((n) => path.join(dir, n));
     if (!mdFiles.length) die(`no .md files in ${dir}`);
     const stems = mdFiles.map((p) => path.basename(p).replace(/\.md$/i, ''));
+    const history = readHistory(dir);
     for (const p of mdFiles) {
-      convertOne(p, p.replace(/\.md$/i, '.html'), stems);
+      convertOne(p, p.replace(/\.md$/i, '.html'), stems, history[path.basename(p)] ?? []);
     }
     return;
   }
 
   const mdPath = args[0];
   const outPath = args[1] || mdPath.replace(/\.md$/i, '.html');
-  convertOne(mdPath, outPath);
+  const history = readHistory(path.dirname(mdPath));
+  convertOne(mdPath, outPath, [], history[path.basename(mdPath)] ?? []);
 }
 
 main();
