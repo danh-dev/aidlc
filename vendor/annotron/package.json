@@ -1,0 +1,41 @@
+{
+  "name": "annotron",
+  "version": "0.3.0",
+  "description": "Local, browser-based review editor for agent-generated HTML artifacts — annotate elements and text, send feedback to your AI coding agent, then finalize the result into the file and download it.",
+  "type": "module",
+  "bin": {
+    "annotron": "./bin/annotron"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "skills/",
+    "commands/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hueanmy/annotron"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "claude-plugin",
+    "html",
+    "artifacts",
+    "annotation",
+    "code-review",
+    "ai-agents",
+    "developer-tools",
+    "cli",
+    "feedback",
+    "llm"
+  ],
+  "author": "Meii",
+  "license": "MIT"
+}

@@ -27,5 +27,11 @@ packages/extension/scripts/demo/out-agents/
 # templates: single source of truth is packages/core/templates; the extension
 # build copies them in via `pnpm copy:templates`.
 packages/extension/templates/
+# tools: single source of truth is /tools; the extension build copies them in
+# via `pnpm copy:tools` for the "Annotate" (md->html + annotron) feature.
+packages/extension/tools/
+# vendored annotron: single source of truth is /vendor/annotron; the extension
+# build copies it in via `pnpm copy:annotron` so the feature ships self-contained.
+packages/extension/vendor/
 .ast-graph/
 .claude/settings.json

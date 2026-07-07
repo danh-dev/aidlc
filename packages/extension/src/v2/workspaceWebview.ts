@@ -1357,6 +1357,68 @@ export class WorkspaceWebview {
     }
   }
 
+  /**
+   * Render an epic's Markdown artifacts to standalone HTML and open the clicked
+   * one in annotron (a local review editor for agent-generated HTML). Markdown
+   * stays the canonical source — the .html is a throwaway annotation render.
+   *
+   * Everything ships with the extension: the Node renderer (`tools/md-to-html.mjs`,
+   * zero-dep, `marked` vendored) and annotron (`vendor/annotron`, zero-dep). Both
+   * run under VS Code's own Electron as Node (`process.execPath` +
+   * ELECTRON_RUN_AS_NODE), so the feature needs no `python`, no global `annotron`,
+   * and nothing on the user's PATH. annotron spawns its server with the same
+   * `process.execPath`, so that propagates.
+   */
+  private annotateArtifact(epicDir: string, filename: string): void {
+    const artifactsDir = path.join(epicDir, 'artifacts');
+    const htmlPath = path.join(artifactsDir, filename.replace(/\.md$/i, '.html'));
+    const extRoot = this.extensionUri.fsPath;
+    const renderer = path.join(extRoot, 'tools', 'md-to-html.mjs');
+    const annotronBin = path.join(extRoot, 'vendor', 'annotron', 'bin', 'annotron');
+
+    for (const [label, p] of [['renderer', renderer], ['annotron', annotronBin]] as const) {
+      if (!fs.existsSync(p)) {
+        void vscode.window.showErrorMessage(
+          `Annotate: bundled ${label} not found at ${p}. Rebuild the extension (pnpm compile).`,
+        );
+        return;
+      }
+    }
+
+    // Run our bundled Node scripts through VS Code's own Electron-as-Node.
+    const nodeEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
+    const exe = process.execPath;
+
+    void vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Rendering ${filename} for annotation…` },
+      async () => {
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const proc = spawn(exe, [renderer, '--all', artifactsDir], { env: nodeEnv });
+            let stderr = '';
+            proc.stderr?.on('data', (d) => { stderr += String(d); });
+            proc.on('error', reject);
+            proc.on('close', (code) =>
+              code === 0 ? resolve() : reject(new Error(stderr.trim() || `renderer exited ${code}`)),
+            );
+          });
+          // annotron starts its background server (if needed) and opens the browser.
+          const annotron = spawn(exe, [annotronBin, htmlPath], {
+            env: nodeEnv,
+            detached: true,
+            stdio: 'ignore',
+          });
+          annotron.unref();
+          void vscode.window.showInformationMessage(
+            `Opened ${path.basename(htmlPath)} in annotron. To let Claude receive your feedback and edit the .md, run /annotate-artifact in Claude Code.`,
+          );
+        } catch (e) {
+          void vscode.window.showErrorMessage(`Annotate failed: ${(e as Error).message}`);
+        }
+      },
+    );
+  }
+
   // ── Message routing ─────────────────────────────────────────────────────
 
   private async handleMessage(msg: { type: string; [k: string]: unknown }): Promise<void> {
@@ -1566,6 +1628,13 @@ export class WorkspaceWebview {
         if (!fs.existsSync(filePath)) { return; }
         const doc = await vscode.workspace.openTextDocument(filePath);
         await vscode.window.showTextDocument(doc, { preview: false });
+        return;
+      }
+      case 'annotateArtifact': {
+        const epicDir = String(msg.epicDir ?? '');
+        const filename = String(msg.filename ?? '');
+        if (!epicDir || !filename) { return; }
+        this.annotateArtifact(epicDir, filename);
         return;
       }
       case 'copyCommand': {

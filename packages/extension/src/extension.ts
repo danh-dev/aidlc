@@ -23,6 +23,7 @@ import { themeManager } from './v2/themeManager';
 import { registerTokenMonitor } from './v2/tokenMonitor';
 import { registerAidlcMonitor } from './v2/aidlcMonitor';
 import { registerAstGraph } from './v2/astGraph';
+import { installAnnotationTools } from './v2/annotationToolsInstaller';
 import { WORKSPACE_DIR, WORKSPACE_FILENAME } from '@aidlc/core';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -36,6 +37,15 @@ export function activate(context: vscode.ExtensionContext): void {
   // prompt. Keeps the global Claude folder clean by default. To remove
   // previously-installed files, run `aidlc.uninstallWorkflowGlobals` before
   // uninstalling the extension (VS Code has no reliable on-uninstall hook).
+
+  // Annotation tooling is the exception: a tiny, self-contained footprint
+  // (renderer + vendored annotron + one skill) that makes /annotate-artifact
+  // work out of the box in any project. Idempotent; never throws into activate.
+  try {
+    installAnnotationTools(context.extensionPath, output.appendLine.bind(output));
+  } catch (e) {
+    output.appendLine(`annotationTools: install failed — ${(e as Error).message}`);
+  }
 
   // Theme override manager — owns the persisted `auto|light|dark` choice
   // and broadcasts user toggles to every open webview.

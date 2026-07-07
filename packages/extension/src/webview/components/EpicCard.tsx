@@ -12,6 +12,7 @@ import {
   Bot,
   User,
   ExternalLink,
+  Highlighter,
   Folder,
   Play,
   History,
@@ -576,22 +577,40 @@ function StepDetail({
         <DetailLabel icon={<FileText className="h-3 w-3" />} text="Artifact" />
         {artifactName ? (
           artifactExists ? (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                postMessage({
-                  type: 'openArtifactFile',
-                  epicDir: epic.epicDir,
-                  filename: artifactName,
-                });
-              }}
-              className="inline-flex w-fit items-center gap-1 rounded border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[11px] text-primary transition-colors hover:border-primary/50 hover:bg-primary/20"
-              title={`Open ${artifactName} in a new tab`}
-            >
-              <span>{artifactName}</span>
-              <ExternalLink className="h-2.5 w-2.5 opacity-70" />
-            </button>
+            <div className="flex w-fit flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  postMessage({
+                    type: 'openArtifactFile',
+                    epicDir: epic.epicDir,
+                    filename: artifactName,
+                  });
+                }}
+                className="inline-flex w-fit items-center gap-1 rounded border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[11px] text-primary transition-colors hover:border-primary/50 hover:bg-primary/20"
+                title={`Open ${artifactName} in a new tab`}
+              >
+                <span>{artifactName}</span>
+                <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  postMessage({
+                    type: 'annotateArtifact',
+                    epicDir: epic.epicDir,
+                    filename: artifactName,
+                  });
+                }}
+                className="inline-flex w-fit items-center gap-1 rounded border border-border bg-surface px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary"
+                title={`Render ${artifactName} to HTML and open it in annotron for annotation`}
+              >
+                <Highlighter className="h-2.5 w-2.5" />
+                <span>Annotate</span>
+              </button>
+            </div>
           ) : (
             <div
               className="inline-flex w-fit items-center rounded border border-border bg-muted/50 px-2 py-0.5 font-mono text-[11px] italic text-muted-foreground opacity-70"
