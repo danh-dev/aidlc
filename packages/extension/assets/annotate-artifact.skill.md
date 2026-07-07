@@ -57,10 +57,13 @@ Let `R = node "$HOME/.claude/tools/md-to-html.mjs"` and
    or typing "done" and Send (the latter always works even if the Finalize button doesn't
    respond).
 
-4. **Apply to the `.md` (never the `.html`).** For each item, locate the corresponding place
-   in the **Markdown source** — match on the item's `text` (the selected/element text) and
-   `note`, not the CSS selector — and edit `MD`. The selector only hints *where* in the doc;
-   the change lands in the `.md`.
+4. **Apply to the `.md` (never the `.html`, and ONLY this `.md`).** For each item, locate the
+   corresponding place in the **Markdown source** — match on the item's `text` (the
+   selected/element text) and `note`, not the CSS selector — and edit `MD`. The selector only
+   hints *where* in the doc; the change lands in the `.md`.
+   **Scope:** edit ONLY `$MD` (the artifact under review). Do **not** create or edit any other
+   file — no new `RELEASE.md`, no sibling artifacts, no source files. If a note implies broader
+   work, don't do it here; mention it in your reply and let the user drive it in the pipeline.
 
 5. **Log the revision, re-render, reply.**
    - `$R --log "$ARTIFACTS" "<FILE>.md" "<the user's note(s)>" "<what you changed>"` — appends
@@ -85,11 +88,20 @@ Let `R = node "$HOME/.claude/tools/md-to-html.mjs"` and
 ## Guardrails
 
 - **Never edit `$HTML`.** Edits go in `$MD`; the render is derived.
+- **Only touch `$MD`.** Never create or edit other files during the loop (no `RELEASE.md`,
+  no other artifacts, no code). This keeps edits inside the pre-authorized artifacts scope so
+  the loop doesn't stop to ask permission mid-review.
 - **Never edit while a poll is in flight** — wait for the feedback JSON first.
 - Do not add this loop to any pipeline `produces:` — MD stays the official artifact.
 - One artifact per session. To review another file, re-invoke with that filename.
 
 ## Permissions
 
-This skill runs `node …/annotron …` and `node …/md-to-html.mjs …` repeatedly. To avoid a
-prompt every turn, allow `Bash(node:*)` (and `Bash(curl:*)`) in `.claude/settings.json`.
+To run the loop without stopping for approvals every round, allow these in
+`.claude/settings.json` (project or user-global):
+- `Bash(node:*)` and `Bash(curl:*)` — the renderer / annotron / poll commands.
+- `Edit(docs/epics/**)` and `Write(docs/epics/**)` — applying feedback to the `.md`.
+
+Because the loop only ever edits the artifact under review (see Guardrails), scoping writes to
+`docs/epics/**` is safe: the human's real approval is the annotron review itself (they see the
+re-rendered result and either annotate again or say "done").
