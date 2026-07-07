@@ -602,6 +602,8 @@ export interface WorkspaceState {
   testAgentConfigExists?: boolean;
   /** Targets parsed from testagent.config.yaml includes. */
   testAgentTargets?: TestAgentTarget[];
+  /** Whether the epic-memory auto-load hook is enabled in ~/.claude/settings.json. */
+  epicMemoryHookEnabled?: boolean;
 }
 
 export interface TestAgentTarget {

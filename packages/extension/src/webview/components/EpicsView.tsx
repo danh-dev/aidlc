@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { Plus } from 'lucide-react';
+import { Plus, Brain } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { WorkspaceState, EpicSummary, EpicFilter } from '@/lib/types';
 import { EpicCard } from './EpicCard';
@@ -61,14 +61,36 @@ export function EpicsView({ state }: { state: WorkspaceState }) {
             <span>inputs</span>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => setStartEpicOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Start Epic
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() =>
+              postMessage({ type: 'toggleEpicMemoryHook', enabled: !state.epicMemoryHookEnabled })
+            }
+            title={
+              state.epicMemoryHookEnabled
+                ? 'Epic-memory auto-load is ON — prompts mentioning an epic auto-load its memory. Click to turn off.'
+                : 'Turn ON epic-memory auto-load — a Claude Code hook injects an epic’s memory whenever a prompt refers to it.'
+            }
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-colors',
+              state.epicMemoryHookEnabled
+                ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/20'
+                : 'border-border bg-card text-muted-foreground hover:text-foreground',
+            )}
+          >
+            <Brain className="h-3.5 w-3.5" />
+            Memory auto-load: {state.epicMemoryHookEnabled ? 'On' : 'Off'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setStartEpicOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Start Epic
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-1.5">

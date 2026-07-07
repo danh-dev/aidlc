@@ -183,6 +183,9 @@ import {
   slugEpicId,
   scaffoldEpic,
   EpicScaffoldError,
+  installAnnotationTools,
+  setEpicMemoryHook,
+  isEpicMemoryHookEnabled,
 } from '@aidlc/core';
 import { SKILL_TEMPLATES } from './skillTemplates';
 import {
@@ -479,6 +482,8 @@ interface WorkspaceState {
   initialView?: WorkspaceView;
   testAgentConfigExists?: boolean;
   testAgentTargets?: { name: string; filePath: string; adapter?: string; url?: string }[];
+  /** Whether the epic-memory auto-load hook is enabled in ~/.claude/settings.json. */
+  epicMemoryHookEnabled: boolean;
 }
 
 const SKILL_TEMPLATE_REFS: SkillTemplateRef[] = SKILL_TEMPLATES.map((t) => ({
@@ -538,6 +543,7 @@ function buildState(initialView: WorkspaceView): WorkspaceState {
       initialView,
       testAgentConfigExists: false,
       testAgentTargets: [],
+      epicMemoryHookEnabled: isEpicMemoryHookEnabled(os.homedir()),
     };
   }
 
@@ -617,6 +623,7 @@ function buildState(initialView: WorkspaceView): WorkspaceState {
       requirementRuns: scanRequirementRuns(root),
       initialView,
       ...(() => { const ta = readTestAgentTargets(root); return { testAgentConfigExists: ta.exists, testAgentTargets: ta.targets }; })(),
+      epicMemoryHookEnabled: isEpicMemoryHookEnabled(os.homedir()),
     };
   }
 
@@ -677,6 +684,7 @@ function buildState(initialView: WorkspaceView): WorkspaceState {
     requirementRuns: scanRequirementRuns(root),
     initialView,
     ...(() => { const ta = readTestAgentTargets(root); return { testAgentConfigExists: ta.exists, testAgentTargets: ta.targets }; })(),
+    epicMemoryHookEnabled: isEpicMemoryHookEnabled(os.homedir()),
   };
 }
 
@@ -1692,6 +1700,22 @@ export class WorkspaceWebview {
         const epicDir = String(msg.epicDir ?? '');
         if (!epicDir) { return; }
         await this.openEpicMemory(epicDir);
+        return;
+      }
+      case 'toggleEpicMemoryHook': {
+        const enabled = msg.enabled === true;
+        // Enabling needs the hook script present under ~/.claude/tools.
+        if (enabled) {
+          try { installAnnotationTools(this.extensionUri.fsPath); } catch { /* best-effort */ }
+        }
+        const r = setEpicMemoryHook(enabled, os.homedir());
+        void vscode.window.showInformationMessage(
+          enabled
+            ? 'Epic-memory hook enabled — prompts that mention an epic auto-load its memory.'
+            : 'Epic-memory hook disabled.',
+        );
+        void r;
+        this.refresh();
         return;
       }
       case 'copyCommand': {

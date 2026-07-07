@@ -1,3 +1,4 @@
+import * as os from 'os';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import {
@@ -7,6 +8,8 @@ import {
   uninstallWorkflowGlobalsByIds,
   isWorkflowGloballyInstalled,
   installAnnotationTools,
+  setEpicMemoryHook,
+  isEpicMemoryHookEnabled,
 } from '@aidlc/core';
 import { cliTemplatesRoot } from '../templatesRoot';
 
@@ -108,4 +111,35 @@ export function registerGlobals(program: Command): void {
         console.log(chalk.dim('  Nothing to remove (no AIDLC-marked global files matched).'));
       }
     });
+
+  // ── memory-hook ─────────────────────────────────────────────────────────────
+  // Opt-in UserPromptSubmit hook that auto-loads an epic's memory whenever a
+  // prompt refers to that epic. Toggles the entry in ~/.claude/settings.json.
+  const hook = cmd
+    .command('memory-hook <action>')
+    .description('Toggle the epic-memory auto-load hook (action: enable | disable | status)')
+    .action((action: string) => {
+      const home = os.homedir();
+      if (action === 'status') {
+        const on = isEpicMemoryHookEnabled(home);
+        console.log(`Epic-memory hook: ${on ? chalk.green('enabled') : chalk.dim('disabled')}`);
+        return;
+      }
+      if (action === 'enable') {
+        // Ensure the hook script (and the rest of the tooling) is present first.
+        installAnnotationTools(cliTemplatesRoot());
+        const r = setEpicMemoryHook(true, home);
+        console.log(chalk.green('✔') + ` Epic-memory hook enabled${r.changed ? '' : ' (already on)'}.`);
+        console.log(chalk.dim('  A prompt that mentions an epic now auto-loads its epic-memory.json.'));
+        return;
+      }
+      if (action === 'disable') {
+        const r = setEpicMemoryHook(false, home);
+        console.log(chalk.yellow('↓') + ` Epic-memory hook disabled${r.changed ? '' : ' (already off)'}.`);
+        return;
+      }
+      console.error(chalk.red(`Unknown action '${action}'. Use: enable | disable | status`));
+      process.exit(1);
+    });
+  void hook;
 }
