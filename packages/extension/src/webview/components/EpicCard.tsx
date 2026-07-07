@@ -13,6 +13,7 @@ import {
   User,
   ExternalLink,
   Highlighter,
+  Eye,
   Brain,
   Folder,
   Play,
@@ -610,6 +611,22 @@ function StepDetail({
               >
                 <Highlighter className="h-2.5 w-2.5" />
                 <span>Annotate</span>
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  postMessage({
+                    type: 'openRenderedHtml',
+                    epicDir: epic.epicDir,
+                    filename: artifactName,
+                  });
+                }}
+                className="inline-flex w-fit items-center gap-1 rounded border border-border bg-surface px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary"
+                title={`Open the rendered HTML of ${artifactName} (with revision history) in your browser`}
+              >
+                <Eye className="h-2.5 w-2.5" />
+                <span>View HTML</span>
               </button>
             </div>
           ) : (

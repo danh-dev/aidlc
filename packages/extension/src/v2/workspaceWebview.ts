@@ -1470,6 +1470,43 @@ export class WorkspaceWebview {
     await vscode.commands.executeCommand('markdown.showPreview', doc.uri);
   }
 
+  /**
+   * Open the persisted rendered HTML for an artifact in the default browser
+   * (rendering it first if missing/stale). Opened via file:// so the revision
+   * selector's relative links into `.revisions/` resolve — you can click a rev
+   * to view an old version. Distinct from Annotate (which is the annotron loop).
+   */
+  private async openRenderedHtml(epicDir: string, filename: string): Promise<void> {
+    const artifactsDir = path.join(epicDir, 'artifacts');
+    const htmlPath = path.join(artifactsDir, filename.replace(/\.md$/i, '.html'));
+    const renderer = path.join(this.extensionUri.fsPath, 'tools', 'md-to-html.mjs');
+
+    // Render (idempotent; the renderer skips when the .html is already fresh).
+    if (fs.existsSync(renderer)) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const proc = spawn(process.execPath, [renderer, '--all', artifactsDir], {
+            env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+          });
+          let stderr = '';
+          proc.stderr?.on('data', (d) => { stderr += String(d); });
+          proc.on('error', reject);
+          proc.on('close', (code) => (code === 0 ? resolve() : reject(new Error(stderr.trim() || `renderer exited ${code}`))));
+        });
+      } catch (e) {
+        void vscode.window.showWarningMessage(`Không render lại được HTML (${(e as Error).message}); mở bản hiện có nếu có.`);
+      }
+    }
+
+    if (!fs.existsSync(htmlPath)) {
+      void vscode.window.showErrorMessage(
+        `Chưa có ${path.basename(htmlPath)}. Bấm Annotate để tạo bản render trước.`,
+      );
+      return;
+    }
+    await vscode.env.openExternal(vscode.Uri.file(htmlPath));
+  }
+
   // ── Message routing ─────────────────────────────────────────────────────
 
   private async handleMessage(msg: { type: string; [k: string]: unknown }): Promise<void> {
@@ -1692,6 +1729,13 @@ export class WorkspaceWebview {
         const epicDir = String(msg.epicDir ?? '');
         if (!epicDir) { return; }
         await this.openEpicMemory(epicDir);
+        return;
+      }
+      case 'openRenderedHtml': {
+        const epicDir = String(msg.epicDir ?? '');
+        const filename = String(msg.filename ?? '');
+        if (!epicDir || !filename) { return; }
+        await this.openRenderedHtml(epicDir, filename);
         return;
       }
       case 'copyCommand': {
