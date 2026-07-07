@@ -513,6 +513,7 @@ function StepDetail({
   // emit different files, so the step is the authoritative source.
   const artifactName = focused.artifact || m.artifact || '';
   const artifactExists = artifactName ? epic.existingArtifacts.includes(artifactName) : false;
+  const [artifactMenuOpen, setArtifactMenuOpen] = useState(false);
 
   const accent = (() => {
     switch (focused.status) {
@@ -578,22 +579,56 @@ function StepDetail({
         <DetailLabel icon={<FileText className="h-3 w-3" />} text="Artifact" />
         {artifactName ? (
           artifactExists ? (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                postMessage({
-                  type: 'artifactMenu',
-                  epicDir: epic.epicDir,
-                  filename: artifactName,
-                });
-              }}
-              className="inline-flex w-fit items-center gap-1 rounded border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[11px] text-primary transition-colors hover:border-primary/50 hover:bg-primary/20"
-              title={`Open ${artifactName} — choose Markdown source or HTML + feedback`}
-            >
-              <span>{artifactName}</span>
-              <ChevronDown className="h-2.5 w-2.5 opacity-70" />
-            </button>
+            <div className="relative w-fit">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setArtifactMenuOpen((v) => !v);
+                }}
+                className="inline-flex w-fit items-center gap-1 rounded border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[11px] text-primary transition-colors hover:border-primary/50 hover:bg-primary/20"
+                title={`Open ${artifactName}`}
+              >
+                <span>{artifactName}</span>
+                <ChevronDown className={cn('h-2.5 w-2.5 opacity-70 transition-transform', artifactMenuOpen && 'rotate-180')} />
+              </button>
+              {artifactMenuOpen && (
+                <>
+                  {/* click-away backdrop */}
+                  <div
+                    className="fixed inset-0 z-10"
+                    onClick={(e) => { e.stopPropagation(); setArtifactMenuOpen(false); }}
+                  />
+                  <div className="absolute left-0 top-full z-20 mt-1 min-w-[210px] overflow-hidden rounded-md border border-border bg-card shadow-lg">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setArtifactMenuOpen(false);
+                        postMessage({ type: 'openArtifactFile', epicDir: epic.epicDir, filename: artifactName });
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-foreground hover:bg-accent"
+                    >
+                      <FileText className="h-3 w-3 text-muted-foreground" />
+                      <span>Open Markdown</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setArtifactMenuOpen(false);
+                        postMessage({ type: 'annotateArtifact', epicDir: epic.epicDir, filename: artifactName });
+                      }}
+                      className="flex w-full items-center gap-2 border-t border-border px-3 py-1.5 text-left text-[11px] text-foreground hover:bg-accent"
+                      title="Render if needed, open in annotron, and start the feedback loop (edits the .md)"
+                    >
+                      <Highlighter className="h-3 w-3 text-primary" />
+                      <span>Open HTML + feedback</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           ) : (
             <div
               className="inline-flex w-fit items-center rounded border border-border bg-muted/50 px-2 py-0.5 font-mono text-[11px] italic text-muted-foreground opacity-70"

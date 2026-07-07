@@ -1470,40 +1470,6 @@ export class WorkspaceWebview {
     await vscode.commands.executeCommand('markdown.showPreview', doc.uri);
   }
 
-  /**
-   * Clicking an artifact offers two ways to open it:
-   *   - Markdown source — open the .md in an editor.
-   *   - HTML + feedback — start the annotron review loop (render if needed via
-   *     the skill's freshness-aware --all, open annotron, poll, apply to .md).
-   */
-  private async artifactMenu(epicDir: string, filename: string): Promise<void> {
-    type Item = vscode.QuickPickItem & { action: 'md' | 'feedback' };
-    const pick = await vscode.window.showQuickPick<Item>(
-      [
-        {
-          label: '$(markdown) Open Markdown',
-          detail: `Open ${filename} source in an editor`,
-          action: 'md',
-        },
-        {
-          label: '$(comment-discussion) Open HTML + feedback',
-          detail: 'Render if needed, open in annotron, and start the feedback loop (edits the .md)',
-          action: 'feedback',
-        },
-      ],
-      { placeHolder: `${filename} — how do you want to open it?` },
-    );
-    if (!pick) { return; }
-    if (pick.action === 'md') {
-      const filePath = path.join(epicDir, 'artifacts', filename);
-      if (!fs.existsSync(filePath)) { return; }
-      const doc = await vscode.workspace.openTextDocument(filePath);
-      await vscode.window.showTextDocument(doc, { preview: false });
-    } else {
-      this.annotateArtifact(epicDir, filename);
-    }
-  }
-
   // ── Message routing ─────────────────────────────────────────────────────
 
   private async handleMessage(msg: { type: string; [k: string]: unknown }): Promise<void> {
@@ -1715,11 +1681,11 @@ export class WorkspaceWebview {
         await vscode.window.showTextDocument(doc, { preview: false });
         return;
       }
-      case 'artifactMenu': {
+      case 'annotateArtifact': {
         const epicDir = String(msg.epicDir ?? '');
         const filename = String(msg.filename ?? '');
         if (!epicDir || !filename) { return; }
-        await this.artifactMenu(epicDir, filename);
+        this.annotateArtifact(epicDir, filename);
         return;
       }
       case 'openEpicMemory': {
