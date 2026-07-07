@@ -9,8 +9,8 @@
  *   tools/vendor/marked.esm.mjs        — vendored markdown lib
  *   tools/epic-memory.mjs              — per-epic memory CLI (zero-dep)
  *   tools/annotron/{bin,src,…}         — vendored annotron (zero-dep)
- *   skills/aidlc-annotate-artifact.md  — the review-loop skill (marker-stamped)
- *   skills/aidlc-epic-context.md       — the epic-memory skill (marker-stamped)
+ *   skills/annotate-artifact/SKILL.md  — the review-loop skill (marker-stamped)
+ *   skills/epic-context/SKILL.md       — the epic-memory skill (marker-stamped)
  *
  * Sources are the extension's own bundled copies (`copy:tools` + `copy:annotron`
  * put them there at build time). The tools are ours and versioned with the
@@ -41,10 +41,12 @@ export function installAnnotationTools(extensionPath: string, log?: (msg: string
   const markedSrc = path.join(extensionPath, 'tools', 'vendor', 'marked.esm.mjs');
   const epicMemorySrc = path.join(extensionPath, 'tools', 'epic-memory.mjs');
   const annotronSrc = path.join(extensionPath, 'vendor', 'annotron');
-  // Skill source → installed filename (aidlc- prefixed so it's clearly ours).
+  // Skill source → skill name. Claude Code discovers personal skills as
+  // `~/.claude/skills/<name>/SKILL.md` (directory form), NOT flat `.md` files —
+  // so the name is the directory and the file is always SKILL.md.
   const skills: Array<[string, string]> = [
-    [path.join(extensionPath, 'assets', 'annotate-artifact.skill.md'), 'aidlc-annotate-artifact.md'],
-    [path.join(extensionPath, 'assets', 'epic-context.skill.md'), 'aidlc-epic-context.md'],
+    [path.join(extensionPath, 'assets', 'annotate-artifact.skill.md'), 'annotate-artifact'],
+    [path.join(extensionPath, 'assets', 'epic-context.skill.md'), 'epic-context'],
   ];
 
   // If the bundle is incomplete (e.g. a partial build), do nothing rather than
@@ -65,26 +67,42 @@ export function installAnnotationTools(extensionPath: string, log?: (msg: string
   copyFile(epicMemorySrc, path.join(toolsDest, 'epic-memory.mjs'));
   copyDir(annotronSrc, path.join(toolsDest, 'annotron'));
 
-  for (const [src, target] of skills) {
-    installSkill(src, path.join(skillsDest, target), target, log);
+  for (const [src, name] of skills) {
+    installSkill(src, path.join(skillsDest, name), name, log);
+    // Migrate away from the earlier (broken) flat-file form that Claude Code
+    // never registered as a skill.
+    removeIfOurs(path.join(skillsDest, `aidlc-${name}.md`), log);
   }
 
   log?.(`annotationTools: installed renderer + annotron + epic-memory + skills into ${path.join(home, '.claude')}`);
 }
 
-function installSkill(src: string, dest: string, target: string, log?: (msg: string) => void): void {
+function installSkill(src: string, destDir: string, name: string, log?: (msg: string) => void): void {
   const body = fs.readFileSync(src, 'utf8');
   // Frontmatter stays on line 1; marker appended at the end.
   const stamped = `${body.replace(/\s*$/, '')}\n\n${SKILL_MARKER}\n`;
+  const dest = path.join(destDir, 'SKILL.md');
 
   if (fs.existsSync(dest)) {
     const existing = fs.readFileSync(dest, 'utf8');
     if (!existing.includes(SKILL_MARKER_KEY)) {
-      log?.(`annotationTools: ${target} exists and is user-owned — leaving it alone`);
+      log?.(`annotationTools: skill ${name} exists and is user-owned — leaving it alone`);
       return; // never clobber a hand-authored skill
     }
   }
+  fs.mkdirSync(destDir, { recursive: true });
   fs.writeFileSync(dest, stamped, 'utf8');
+}
+
+/** Remove a file only if it carries our ownership marker (never a user's). */
+function removeIfOurs(filePath: string, log?: (msg: string) => void): void {
+  try {
+    if (!fs.existsSync(filePath)) { return; }
+    if (fs.readFileSync(filePath, 'utf8').includes(SKILL_MARKER_KEY)) {
+      fs.unlinkSync(filePath);
+      log?.(`annotationTools: removed stale ${path.basename(filePath)}`);
+    }
+  } catch { /* best-effort cleanup */ }
 }
 
 function copyFile(src: string, dest: string): void {
