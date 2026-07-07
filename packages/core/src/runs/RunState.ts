@@ -124,6 +124,8 @@ export type StepHistoryEntry =
       kind: 'annotate';
       at: string;
       revision: number;
+      /** Who made the edit — git user (name <email>) or hostname fallback. */
+      author?: string;
       /** The human's annotation note(s) for this round. */
       note?: string;
       /** What the agent changed in the .md in response. */

@@ -23,7 +23,9 @@
  * (../foo.md, sub/bar.md) or to external URLs untouched — those still point at .md.
  */
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { marked, Renderer } from './vendor/marked.esm.mjs';
 
@@ -198,6 +200,7 @@ img { max-width: 100%; height: auto; border-radius: 8px; }
   color: var(--muted); font-size: .78rem;
 }
 .rev-history .rev-n { color: var(--accent); font-weight: 700; }
+.rev-history .rev-author { color: var(--text); font-weight: 600; }
 .rev-history .rev-note { color: var(--text); font-weight: 600; margin: .2em 0 .1em; }
 .rev-history .rev-summary { color: var(--muted); }
 
@@ -241,12 +244,35 @@ function readHistory(dir) {
   }
 }
 
+// Who made the edit: git identity (repo-local or global), falling back to the
+// machine hostname when there's no git / no configured user.
+function detectAuthor(cwd) {
+  const git = (args) => {
+    try {
+      return execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000 })
+        .toString().trim();
+    } catch { return ''; }
+  };
+  const name = git(['config', 'user.name']);
+  if (name) {
+    const email = git(['config', 'user.email']);
+    return email ? `${name} <${email}>` : name;
+  }
+  return os.hostname();
+}
+
 function logHistory(dir, mdName, note, summary) {
   const p = path.join(dir, HISTORY_FILE);
   const all = readHistory(dir);
   const list = Array.isArray(all[mdName]) ? all[mdName] : [];
   const rev = list.length ? (list[list.length - 1].rev ?? list.length) + 1 : 1;
-  list.push({ at: new Date().toISOString(), rev, note: note || '', summary: summary || '' });
+  list.push({
+    at: new Date().toISOString(),
+    rev,
+    author: detectAuthor(dir),
+    note: note || '',
+    summary: summary || '',
+  });
   all[mdName] = list;
   fs.writeFileSync(p, JSON.stringify(all, null, 2) + '\n', 'utf8');
   console.log(`logged rev ${rev} for ${mdName}`);
@@ -256,9 +282,10 @@ function renderHistorySection(entries) {
   if (!entries || !entries.length) return '';
   const items = entries.map((e) => {
     const when = escapeHtml(e.at || '');
+    const author = e.author ? `<span class="rev-author">${escapeHtml(e.author)}</span>` : '';
     const note = e.note ? `<div class="rev-note">${escapeHtml(e.note)}</div>` : '';
     const summary = e.summary ? `<div class="rev-summary">${escapeHtml(e.summary)}</div>` : '';
-    return `<li><div class="rev-head"><span class="rev-n">rev ${escapeHtml(String(e.rev ?? ''))}</span><time>${when}</time></div>${note}${summary}</li>`;
+    return `<li><div class="rev-head"><span class="rev-n">rev ${escapeHtml(String(e.rev ?? ''))}</span>${author}<time>${when}</time></div>${note}${summary}</li>`;
   }).join('\n');
   return `\n<details class="rev-history">
 <summary>Revision history (${entries.length})</summary>

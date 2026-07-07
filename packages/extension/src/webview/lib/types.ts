@@ -466,6 +466,7 @@ export type StepHistoryEntry =
       kind: 'annotate';
       at: string;
       revision: number;
+      author?: string;
       note?: string;
       summary?: string;
     };

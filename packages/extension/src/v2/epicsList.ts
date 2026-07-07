@@ -125,6 +125,7 @@ function readAnnotationHistory(artifactsDir: string): Record<string, StepHistory
           kind: 'annotate' as const,
           at: String(r.at ?? ''),
           revision: Number(r.rev ?? 0),
+          author: r.author ? String(r.author) : undefined,
           note: r.note ? String(r.note) : undefined,
           summary: r.summary ? String(r.summary) : undefined,
         };

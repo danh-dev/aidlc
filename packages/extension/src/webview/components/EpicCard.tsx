@@ -870,6 +870,7 @@ function HistoryBody({ entry }: { entry: StepHistoryEntry }) {
         <div className="space-y-0.5">
           {entry.note && <div className="font-mono text-foreground/80">↳ {entry.note}</div>}
           {entry.summary && <div className="text-muted-foreground">✎ {entry.summary}</div>}
+          {entry.author && <div className="text-muted-foreground/70">by {entry.author}</div>}
         </div>
       );
   }
