@@ -120,6 +120,8 @@ Keep using grep/read/edit for:
 - following intent, naming, or non-AST signals (config files, prose)
 
 If the graph looks stale, ask the user to run \`AIDLC: Rescan AST Graph\`. The
-extension also rescans automatically a few seconds after any source file save.
+extension also rescans automatically a few seconds after any source file save
+(incremental), and does a full clean rescan after git operations that change the
+working tree — branch switch/checkout, merge, rebase, reset, or pull.
 ${MARKER_END}`;
 }

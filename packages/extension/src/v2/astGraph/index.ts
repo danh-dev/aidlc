@@ -22,6 +22,7 @@ import * as vscode from 'vscode';
 import { ensureAstGraphBinary, UnsupportedPlatformError } from './binary';
 import {
   createSourceWatcher,
+  createGitWatcher,
   ensureGitignoreEntry,
   runScan,
   type ScanSummary,
@@ -41,6 +42,8 @@ interface FolderState {
   scanning: boolean;
   mcp: { ok: boolean; reason: string };
   watcher: vscode.Disposable | null;
+  /** Watches .git refs → clean rescan on branch switch / merge / pull. */
+  gitWatcher: vscode.Disposable | null;
 }
 
 export function registerAstGraph(
@@ -121,6 +124,7 @@ export function registerAstGraph(
       scanning: false,
       mcp: { ok: false, reason: 'not registered yet' },
       watcher: null,
+      gitWatcher: null,
     };
     if (state.scanning) {
       output.appendLine(`AST graph: scan already in flight for ${folder.name}, skipping.`);
@@ -208,8 +212,18 @@ export function registerAstGraph(
         void scanFolder(folder, false);
       },
     });
+    // Git ref watcher: branch switch / merge / rebase / reset / pull → clean
+    // rescan so the graph fully reflects the new tree (add/remove/rename).
+    state.gitWatcher = createGitWatcher({
+      folder,
+      debounceMs,
+      onTrigger: () => {
+        output.appendLine(`AST graph: git ref changed in ${folder.name} — clean rescan.`);
+        void scanFolder(folder, true);
+      },
+    });
     folderStates.set(key, state);
-    context.subscriptions.push(state.watcher);
+    context.subscriptions.push(state.watcher, state.gitWatcher);
   }
 
   // ---- Bootstrap (async, non-blocking) -------------------------------------
@@ -247,6 +261,7 @@ export function registerAstGraph(
           scanning: false,
           mcp: { ok: false, reason: 'not registered yet' },
           watcher: null,
+          gitWatcher: null,
         });
       }
     }
@@ -285,6 +300,7 @@ export function registerAstGraph(
           scanning: false,
           mcp: { ok: false, reason: 'not registered yet' },
           watcher: null,
+          gitWatcher: null,
         });
       }
       const primary = primaryFolder();

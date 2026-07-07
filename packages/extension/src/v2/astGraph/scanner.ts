@@ -190,6 +190,46 @@ export function createSourceWatcher(opts: WatcherOpts): vscode.Disposable {
   };
 }
 
+// Git refs whose change means the working tree just moved to a different state:
+//   HEAD       — branch switch / checkout / detach
+//   ORIG_HEAD  — written before merge / rebase / reset / pull
+//   MERGE_HEAD — present during a merge (incl. pull)
+// A change to any of these = "code changed via git" → do a full/clean rescan
+// (branch switch / merge / pull can add / remove / rename many files, which an
+// incremental pass may not fully reconcile).
+const GIT_WATCH_GLOB = '.git/{HEAD,ORIG_HEAD,MERGE_HEAD}';
+
+/**
+ * Watch the primary folder's git refs and fire (debounced) on branch switch,
+ * merge, rebase, reset, or pull. Separate from the source watcher so these can
+ * trigger a clean rescan. No-op safe when the folder isn't a git repo (the
+ * watcher just never fires).
+ */
+export function createGitWatcher(opts: WatcherOpts): vscode.Disposable {
+  const pattern = new vscode.RelativePattern(opts.folder, GIT_WATCH_GLOB);
+  const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+  let timer: NodeJS.Timeout | null = null;
+
+  const fire = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      opts.onTrigger();
+    }, opts.debounceMs);
+  };
+
+  watcher.onDidChange(fire);
+  watcher.onDidCreate(fire);
+  watcher.onDidDelete(fire);
+
+  return {
+    dispose() {
+      if (timer) clearTimeout(timer);
+      watcher.dispose();
+    },
+  };
+}
+
 /**
  * Run a short auxiliary command against an existing graph (e.g.
  * `hotspots`, `stats`, `routes`) and return stdout. 20s timeout —
