@@ -1,20 +1,22 @@
 /**
- * Installs the annotation tooling into the user's global Claude folder so the
- * `/annotate-artifact` review loop works out of the box in any project — no
- * `python`, no `pip install`, no global `annotron`, just `node` (which Claude
- * Code already requires).
+ * Installs the annotation + epic-memory tooling into the user's global Claude
+ * folder so `/annotate-artifact` and `/epic-context` work out of the box in any
+ * project — no `python`, no `pip install`, no global `annotron`, just `node`
+ * (which Claude Code already requires).
  *
  * What lands where (all under `~/.claude/`):
- *   tools/md-to-html.mjs            — zero-dep Node renderer (marked vendored)
- *   tools/vendor/marked.esm.mjs     — vendored markdown lib
- *   tools/annotron/{bin,src,…}      — vendored annotron (zero-dep)
- *   skills/aidlc-annotate-artifact.md — the review-loop skill (marker-stamped)
+ *   tools/md-to-html.mjs               — zero-dep Node renderer (marked vendored)
+ *   tools/vendor/marked.esm.mjs        — vendored markdown lib
+ *   tools/epic-memory.mjs              — per-epic memory CLI (zero-dep)
+ *   tools/annotron/{bin,src,…}         — vendored annotron (zero-dep)
+ *   skills/aidlc-annotate-artifact.md  — the review-loop skill (marker-stamped)
+ *   skills/aidlc-epic-context.md       — the epic-memory skill (marker-stamped)
  *
  * Sources are the extension's own bundled copies (`copy:tools` + `copy:annotron`
- * put them there at build time). The renderer + annotron are ours and versioned
- * with the extension, so they're overwritten every activation. The skill is
- * marker-stamped and only overwritten if it's ours — a hand-edited file (no
- * marker) is left alone.
+ * put them there at build time). The tools are ours and versioned with the
+ * extension, so they're overwritten every activation. Skills are marker-stamped
+ * and only overwritten if they're ours — a hand-edited file (no marker) is left
+ * alone.
  *
  * Safe to call on every activation; wrap the call in try/catch so a filesystem
  * hiccup never blocks the extension from starting.
@@ -29,7 +31,6 @@ import * as path from 'path';
 // end of the file and ownership is detected with a substring check.
 const SKILL_MARKER = '<!-- AIDLC annotation tool — reinstalled by the AIDLC extension; hand edits are overwritten -->';
 const SKILL_MARKER_KEY = 'AIDLC annotation tool';
-const SKILL_TARGET = 'aidlc-annotate-artifact.md';
 
 export function installAnnotationTools(extensionPath: string, log?: (msg: string) => void): void {
   const home = os.homedir();
@@ -38,12 +39,18 @@ export function installAnnotationTools(extensionPath: string, log?: (msg: string
 
   const rendererSrc = path.join(extensionPath, 'tools', 'md-to-html.mjs');
   const markedSrc = path.join(extensionPath, 'tools', 'vendor', 'marked.esm.mjs');
+  const epicMemorySrc = path.join(extensionPath, 'tools', 'epic-memory.mjs');
   const annotronSrc = path.join(extensionPath, 'vendor', 'annotron');
-  const skillSrc = path.join(extensionPath, 'assets', 'annotate-artifact.skill.md');
+  // Skill source → installed filename (aidlc- prefixed so it's clearly ours).
+  const skills: Array<[string, string]> = [
+    [path.join(extensionPath, 'assets', 'annotate-artifact.skill.md'), 'aidlc-annotate-artifact.md'],
+    [path.join(extensionPath, 'assets', 'epic-context.skill.md'), 'aidlc-epic-context.md'],
+  ];
 
   // If the bundle is incomplete (e.g. a partial build), do nothing rather than
   // install a half-working tool.
-  for (const p of [rendererSrc, markedSrc, annotronSrc, skillSrc]) {
+  const required = [rendererSrc, markedSrc, epicMemorySrc, annotronSrc, ...skills.map(([s]) => s)];
+  for (const p of required) {
     if (!fs.existsSync(p)) {
       log?.(`annotationTools: missing bundled source ${p} — skipping install`);
       return;
@@ -55,14 +62,17 @@ export function installAnnotationTools(extensionPath: string, log?: (msg: string
 
   copyFile(rendererSrc, path.join(toolsDest, 'md-to-html.mjs'));
   copyFile(markedSrc, path.join(toolsDest, 'vendor', 'marked.esm.mjs'));
+  copyFile(epicMemorySrc, path.join(toolsDest, 'epic-memory.mjs'));
   copyDir(annotronSrc, path.join(toolsDest, 'annotron'));
 
-  installSkill(skillSrc, path.join(skillsDest, SKILL_TARGET), log);
+  for (const [src, target] of skills) {
+    installSkill(src, path.join(skillsDest, target), target, log);
+  }
 
-  log?.(`annotationTools: installed renderer + annotron + /annotate-artifact into ${path.join(home, '.claude')}`);
+  log?.(`annotationTools: installed renderer + annotron + epic-memory + skills into ${path.join(home, '.claude')}`);
 }
 
-function installSkill(src: string, dest: string, log?: (msg: string) => void): void {
+function installSkill(src: string, dest: string, target: string, log?: (msg: string) => void): void {
   const body = fs.readFileSync(src, 'utf8');
   // Frontmatter stays on line 1; marker appended at the end.
   const stamped = `${body.replace(/\s*$/, '')}\n\n${SKILL_MARKER}\n`;
@@ -70,7 +80,7 @@ function installSkill(src: string, dest: string, log?: (msg: string) => void): v
   if (fs.existsSync(dest)) {
     const existing = fs.readFileSync(dest, 'utf8');
     if (!existing.includes(SKILL_MARKER_KEY)) {
-      log?.(`annotationTools: ${SKILL_TARGET} exists and is user-owned — leaving it alone`);
+      log?.(`annotationTools: ${target} exists and is user-owned — leaving it alone`);
       return; // never clobber a hand-authored skill
     }
   }
