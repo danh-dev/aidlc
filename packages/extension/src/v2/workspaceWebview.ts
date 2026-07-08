@@ -1696,6 +1696,22 @@ export class WorkspaceWebview {
         await vscode.window.showTextDocument(doc, { preview: false });
         return;
       }
+      case 'openHtmlFile': {
+        // Read-only view of the rendered artifact — open the .html in the
+        // browser (rendered), not the editor (raw source).
+        const epicDir = String(msg.epicDir ?? '');
+        const filename = String(msg.filename ?? '');
+        if (!epicDir || !filename) { return; }
+        const filePath = path.join(epicDir, 'artifacts', filename);
+        if (!fs.existsSync(filePath)) {
+          void vscode.window.showInformationMessage(
+            `Chưa có bản HTML cho artifact này. Bấm “Feedback” để render rồi mở annotron.`,
+          );
+          return;
+        }
+        await vscode.env.openExternal(vscode.Uri.file(filePath));
+        return;
+      }
       case 'annotateArtifact': {
         const epicDir = String(msg.epicDir ?? '');
         const filename = String(msg.filename ?? '');
