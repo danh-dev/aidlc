@@ -1413,9 +1413,16 @@ export class WorkspaceWebview {
     const skillCmd = `/annotate-artifact ${epicId} ${filename}`;
     const termName = `AIDLC · Annotate: ${epicId}/${filename}`;
 
-    // Reuse the terminal if a loop is already running for this artifact.
+    // Reuse the terminal only if a loop is still *live* for this artifact.
+    // A terminal whose Claude process already exited keeps its name in the
+    // panel; reusing it would just re-focus a dead shell and never re-run the
+    // command (the reported "click does nothing once the HTML already exists"
+    // bug). exitStatus is defined once the process has ended → treat as stale.
     const existing = vscode.window.terminals.find((t) => t.name === termName);
-    if (existing) { existing.show(false); return; }
+    if (existing) {
+      if (existing.exitStatus === undefined) { existing.show(false); return; }
+      existing.dispose();
+    }
 
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const cwd = root && fs.existsSync(root) ? root : epicDir;
