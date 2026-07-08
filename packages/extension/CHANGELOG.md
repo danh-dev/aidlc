@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.3.0
+
+### Annotron artifact menu: separate Open HTML and Feedback
+
+- feat(extension): the artifact dropdown now splits the old "Open HTML + feedback" entry into two distinct actions — **Open HTML** (shown only once the rendered `.html` exists; opens it read-only in your browser) and **Feedback** (always shown; runs `/annotate-artifact`, rendering the HTML first if it's missing, then opens annotron for the review loop).
+- fix(extension): the annotate terminal is now recreated instead of silently reused when its Claude process has already exited. Previously, clicking Feedback again after a finished loop just re-focused a dead terminal and ran no command.
+- chore: `aidlc` CLI bumped to 0.9.0 in lockstep (no functional CLI changes this release).
+
 ## 2.2.0
 
 ### Epic-memory auto-load + git-aware AST rescan
